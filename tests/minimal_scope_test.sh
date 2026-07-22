@@ -27,11 +27,14 @@ if git -C "$repo_root" grep -n 'github.com/chenhg5/cc-connect' -- '*.go' go.mod;
   fail 'old module path remains in Go source'
 fi
 
+[ -f "$repo_root/AGENT_INSTALL.md" ] || fail 'AGENT_INSTALL.md missing'
+
 for readme in README.md README.zh-CN.md
 do
   grep -F 'agent/codex' "$repo_root/$readme" >/dev/null || fail "$readme does not describe Codex scope"
   grep -F 'platform/feishu' "$repo_root/$readme" >/dev/null || fail "$readme does not describe Feishu scope"
   grep -F 'platform/weixin' "$repo_root/$readme" >/dev/null || fail "$readme does not describe Weixin scope"
+  grep -F 'codex -C "$HOME" -s workspace-write -a on-request' "$repo_root/$readme" >/dev/null || fail "$readme does not expose the interactive Agent installer"
 done
 
 printf 'PASS: minimal Codex Feishu Weixin scope\n'

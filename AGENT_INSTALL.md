@@ -1,0 +1,119 @@
+# CC Connect Codex Sync：Agent 安装任务
+
+你正在帮助当前用户在 macOS 上安装或升级 `yangzhousutpc-a11y/cc-connect-codex-sync`。这是一次交互式本地安装任务，不是源码改造任务。请使用用户当前的语言沟通，并持续执行到完成或遇到必须由用户处理的授权节点。
+
+## 安装目标
+
+- 从本项目 GitHub 最新 Release 获取源码安装包和对应 SHA-256 校验文件。
+- 使用安装包内现有脚本构建并安装到 `~/cc-connect`。
+- 根据用户选择配置飞书、个人微信或两者。
+- 激活唯一的 macOS 后台服务，运行诊断并完成所选平台的收发验收。
+
+## 不可突破的安全边界
+
+1. 只信任以下仓库及其 Release：`https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync`。
+2. 只下载名称匹配 `cc-connect-codex-sync-*-macos-source.tar.gz` 的源码安装包及同名 `.sha256`；不要改用预编译包或其他来源。
+3. 校验失败、下载来源不符或 Release 资产不唯一时立即停止，不得绕过校验。
+4. 不使用 `sudo`，不关闭 Gatekeeper，不降低系统安全设置，不跳过 Codex 审批或沙箱。
+5. 不搜索用户主目录中的无关文件，不读取或输出已有 Token、Cookie、微信登录状态、会话正文和完整日志。
+6. 不要求用户把 App Secret、Token 或其他密钥粘贴到对话中；让用户在平台 `setup` 的本机交互提示中输入，或自行编辑权限为 `600` 的配置文件。
+7. 不覆盖已有 `~/cc-connect/data/config.toml`，不删除 `data`、`sessions`、`logs`、`backups` 或已有登录状态。
+8. 不安装其他 Agent、消息平台、Web 管理端或 npm 版本的 CC Connect。
+
+## 执行流程
+
+### 1. 确认用户选择
+
+开始时简要说明：自动步骤包括下载、校验、构建、安装、激活和诊断；飞书凭据、微信扫码及 macOS 权限必须由用户本人确认。
+
+询问并确认以下信息：
+
+- 启用飞书、个人微信，还是两者都启用；
+- cc-connect 项目名称；
+- Codex 使用的绝对工作目录。
+
+不要猜测这些值，也不要把示例值写入正式配置。
+
+### 2. 只读预检
+
+检查并报告结论，不输出敏感环境变量：
+
+- `uname -s` 必须为 `Darwin`；
+- macOS 必须为 12 或更高版本；
+- 架构必须为 `arm64` 或 `x86_64`；
+- `codex --version` 可以运行，且 Codex 已完成登录；
+- 网络可访问 GitHub Release 和 `go.dev`；
+- 临时空间至少约 1 GB。
+
+预检不通过时停止在对应步骤，给出最小修复方式，不开始安装。
+
+### 3. 下载并校验最新 Release
+
+使用 `mktemp -d` 创建本轮专用临时目录，并确保结束或中断时只清理这个已解析的临时目录。
+
+查询仓库最新 GitHub Release，下载唯一匹配的源码安装包和同名 `.sha256` 文件。下载后在临时目录运行：
+
+```bash
+shasum -a 256 -c cc-connect-codex-sync-*-macos-source.tar.gz.sha256
+```
+
+只有校验明确返回成功才能继续。不要自行生成新的校验文件，也不要接受文件名与校验记录不一致。
+
+### 4. 解压并调用现有安装器
+
+在临时目录解压安装包，确认只得到预期的 `cc-connect-source-install` 目录。先阅读其中的 `README.md` 和 `VERSION`，然后在该目录运行：
+
+```bash
+./bootstrap.sh
+```
+
+不要重写、替换或绕过安装包内的 `bootstrap.sh`、`install.sh`、`lib.sh` 和校验清单。已有安装必须沿用安装器自身的事务切换、备份和失败回滚。
+
+### 5. 配置所选平台
+
+如果 `~/cc-connect/data/config.toml` 已存在，只核对必要字段，不覆盖整个文件。如果不存在，运行：
+
+```bash
+install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.toml
+```
+
+引导用户把已确认的项目名称和绝对工作目录写入配置。随后只对用户选择的平台执行：
+
+```bash
+~/cc-connect/runtime/cc-connect feishu setup --project <项目名称>
+~/cc-connect/runtime/cc-connect weixin setup --project <项目名称>
+```
+
+- 飞书：让用户在本机提示中输入应用凭据，并按 `~/cc-connect/installer/source/docs/feishu.md` 检查机器人权限和事件订阅。
+- 微信：让用户本人扫描终端二维码，并按 `~/cc-connect/installer/source/docs/weixin.md` 完成个人微信登录。
+- macOS 弹出“文稿”或“桌面”访问请求时，说明触发访问的真实程序和用途，等待用户决定；不要代替用户扩大权限。
+
+### 6. 激活与诊断
+
+平台配置完成后，在已校验的安装包目录运行：
+
+```bash
+./bootstrap.sh --activate
+./doctor.sh
+```
+
+确认只有一个 cc-connect 服务实例，runtime、配置和 launchd 指向 `~/cc-connect` 的统一目录。诊断失败时先处理明确失败项，再重新诊断；不要通过删除用户数据重装来掩盖问题。
+
+### 7. 实机验收
+
+请用户在每个已启用平台分别发送一条唯一测试消息，并检查：
+
+- 平台消息进入正确的 Codex App 会话；
+- Codex 回复返回原平台会话；
+- 从 Codex App 发送的后续消息也回到原平台会话；
+- 飞书群之间不串线；微信回复显示当前逻辑会话简称。
+
+只有 `doctor` 无阻断失败、所选平台完成双向收发、服务保持运行时，才能报告“安装完成”。报告中不得展示凭据、用户标识、群 ID、会话 ID、完整日志或个人绝对路径。
+
+## 失败与恢复
+
+- 下载、校验或构建失败：保留用户数据，清理本轮临时目录，说明失败阶段后安全重试。
+- 飞书配置失败：只检查应用凭据、权限、事件订阅和机器人入群状态。
+- 微信登录失败：重新执行微信 `setup` 并让用户扫码，不复制其他设备的登录状态。
+- 服务激活失败：使用安装器保留的备份和诊断信息恢复，不手工拼接多个 runtime。
+- 无法确认安全状态：停止并向用户说明需要确认的具体问题，不自行扩大操作范围。

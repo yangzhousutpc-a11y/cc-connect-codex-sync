@@ -80,10 +80,20 @@ packaging/macos
 
 ## 如何选择
 
-- **普通用户：** 从 [Releases](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases) 下载 `cc-connect-codex-sync-*-macos-source.tar.gz`，解压后按照下方安装步骤操作。对应的 `.sha256` 文件仅用于校验下载是否完整，不是第二个安装包。
+- **普通用户：** 推荐使用下方的 Agent 引导式安装；也可以从 [Releases](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases) 下载 `cc-connect-codex-sync-*-macos-source.tar.gz` 手动安装。对应的 `.sha256` 文件仅用于校验下载是否完整，不是第二个安装包。
 - **开发者：** 克隆本仓库，在源码目录中构建、测试或参与开发。Release 安装包属于发布产物，不提交到源码仓库。
 
-## macOS 安装
+## Agent 引导式安装（推荐）
+
+适合已经安装并登录 Codex CLI 的 macOS 用户。复制下面这一条命令，它会启动一个交互式 Codex 安装会话：
+
+```bash
+CC_CONNECT_AGENT_PROMPT="$(curl -fsSL https://raw.githubusercontent.com/yangzhousutpc-a11y/cc-connect-codex-sync/main/AGENT_INSTALL.md)" && [ -n "$CC_CONNECT_AGENT_PROMPT" ] && codex -C "$HOME" -s workspace-write -a on-request "$CC_CONNECT_AGENT_PROMPT"
+```
+
+Agent 会自动完成下载、校验、构建、安装、激活和诊断；遇到飞书凭据、微信扫码或 macOS 权限时会暂停，由用户本人确认。完整行为和安全边界见 [Agent 安装任务](AGENT_INSTALL.md)。该方式不会跳过 Codex 审批或关闭沙箱。
+
+## macOS 手动安装
 
 要求：macOS 12 或更高版本、网络连接，以及已经安装并登录的 Codex CLI。用户不需要预装 Go；缺少兼容 Go 时，安装器会下载并校验临时工具链。
 
