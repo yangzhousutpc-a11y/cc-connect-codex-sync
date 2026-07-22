@@ -204,6 +204,8 @@ case_basic_layout_and_readme() {
   assert_file "$CC_CONNECT_ROOT/runtime/cc-connect"
   assert_file "$CC_CONNECT_ROOT/data/config.example.toml"
   assert_file "$CC_CONNECT_ROOT/installer/README.md"
+  assert_file "$CC_CONNECT_ROOT/installer/setup.sh"
+  assert_mode "$CC_CONNECT_ROOT/installer/setup.sh" 700
   assert_link_target "$HOME/.cc-connect" "$CC_CONNECT_ROOT/data"
   assert_link_target "$HOME/.local/bin/cc-connect" "$CC_CONNECT_ROOT/runtime/cc-connect"
   [ ! -s "$CC_TEST_DAEMON_LOG" ] || fail 'staged install activated daemon'
@@ -225,7 +227,7 @@ case_installed_source_can_update_itself() {
   candidate_hash=$(sha256 "$candidate")
   "$CC_CONNECT_ROOT/installer/install.sh" --binary "$candidate" || fail 'installed installer could not update itself'
   [ "$(sha256 "$CC_CONNECT_ROOT/runtime/cc-connect")" = "$candidate_hash" ] || fail 'installed source did not promote the candidate runtime'
-  for leaf in config.example.toml README.md install.sh doctor.sh uninstall.sh lib.sh; do
+  for leaf in config.example.toml README.md setup.sh install.sh doctor.sh uninstall.sh lib.sh; do
     assert_file "$CC_CONNECT_ROOT/installer/$leaf"
   done
 }
@@ -236,6 +238,7 @@ case_material_leaf_preflight_preserves_runtime() {
     installer/config.example.toml \
     data/config.example.toml \
     installer/README.md \
+    installer/setup.sh \
     installer/install.sh \
     installer/doctor.sh \
     installer/uninstall.sh \
@@ -417,7 +420,7 @@ case_upgrade_backup_and_activation_rollback() {
   assert_not_exists "$HOME/.cc-connect"
   assert_not_exists "$HOME/.local/bin/cc-connect"
   assert_not_exists "$CC_CONNECT_ROOT/data/config.example.toml"
-  for leaf in config.example.toml README.md install.sh doctor.sh uninstall.sh lib.sh; do
+  for leaf in config.example.toml README.md setup.sh install.sh doctor.sh uninstall.sh lib.sh; do
     assert_not_exists "$CC_CONNECT_ROOT/installer/$leaf"
   done
   for backup_name in install-20000101000001-sentinel install-20000101000002-sentinel install-20000101000003-sentinel install-20000101000004-sentinel; do
@@ -513,6 +516,7 @@ case_signal_rolls_back_transaction() {
   install -m 600 "$bundle/config.example.toml" "$CC_CONNECT_ROOT/data/config.toml"
   old_runtime_hash=$(sha256 "$CC_CONNECT_ROOT/runtime/cc-connect")
   old_readme_hash=$(sha256 "$CC_CONNECT_ROOT/installer/README.md")
+  old_setup_hash=$(sha256 "$CC_CONNECT_ROOT/installer/setup.sh")
   candidate="$case_root/signal-candidate"
   write_fake_binary "$candidate" signal-candidate
   CC_TEST_SIGNAL_PARENT=1
@@ -523,6 +527,7 @@ case_signal_rolls_back_transaction() {
   unset CC_TEST_SIGNAL_PARENT
   [ "$(sha256 "$CC_CONNECT_ROOT/runtime/cc-connect")" = "$old_runtime_hash" ] || fail 'TERM rollback did not restore runtime'
   [ "$(sha256 "$CC_CONNECT_ROOT/installer/README.md")" = "$old_readme_hash" ] || fail 'TERM rollback did not restore install materials'
+  [ "$(sha256 "$CC_CONNECT_ROOT/installer/setup.sh")" = "$old_setup_hash" ] || fail 'TERM rollback did not restore setup.sh'
   assert_not_exists "$HOME/Library/LaunchAgents/com.cc-connect.service.plist"
   assert_not_exists "$CC_CONNECT_ROOT/data/daemon.json"
   assert_link_target "$HOME/.cc-connect" "$CC_CONNECT_ROOT/data"

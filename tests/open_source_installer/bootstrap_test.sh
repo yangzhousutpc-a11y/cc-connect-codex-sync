@@ -441,7 +441,8 @@ setup_case() {
   printf 'verified bundled source\n' >"$bundle/source/release-marker.txt"
   printf 'nested source data\n' >"$bundle/source/internal/data.txt"
   printf '#!/bin/sh\nexit 97\n' >"$bundle/install.sh"
-  chmod 755 "$bundle/bootstrap.sh" "$bundle/install.sh"
+  printf '#!/bin/sh\nexit 96\n' >"$bundle/setup.sh"
+  chmod 755 "$bundle/bootstrap.sh" "$bundle/install.sh" "$bundle/setup.sh"
   chmod 755 "$bundle/source" "$bundle/source/cmd" "$bundle/source/internal"
   chmod 750 "$bundle/source/cmd/cc-connect" "$bundle/source/internal/empty"
   chmod 640 "$bundle/source/go.mod" "$bundle/source/internal/data.txt"
@@ -795,6 +796,7 @@ case_rejects_critical_symlink_inputs() {
     VERSION \
     checksums.txt \
     go-toolchains.txt \
+    setup.sh \
     install.sh \
     source/go.mod \
     source/release-marker.txt

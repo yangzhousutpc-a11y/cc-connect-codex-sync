@@ -26,6 +26,7 @@ config_path="$root/data/config.toml"
 installer_config="$root/installer/config.example.toml"
 data_example="$root/data/config.example.toml"
 installer_readme="$root/installer/README.md"
+installer_setup="$root/installer/setup.sh"
 installer_install="$root/installer/install.sh"
 installer_doctor="$root/installer/doctor.sh"
 installer_uninstall="$root/installer/uninstall.sh"
@@ -42,10 +43,10 @@ cc_require_executable_regular "$binary_path" '候选运行程序'
 "$binary_path" --version >/dev/null 2>&1 || cc_die "候选运行程序未通过 --version 验证：$binary_path"
 [ -f "$script_dir/config.example.toml" ] || cc_die "缺少配置模板：$script_dir/config.example.toml"
 readme_path=$(cc_find_readme "$script_dir") || cc_die "缺少安装说明：$script_dir/README.md 或 README.zh-CN.md"
-for source_script in "$script_dir/install.sh" "$script_dir/doctor.sh" "$script_dir/uninstall.sh" "$script_dir/lib.sh"; do
+for source_script in "$script_dir/setup.sh" "$script_dir/install.sh" "$script_dir/doctor.sh" "$script_dir/uninstall.sh" "$script_dir/lib.sh"; do
   [ -f "$source_script" ] && [ ! -L "$source_script" ] && [ -x "$source_script" ] || cc_die "安装脚本源必须是非软链接普通可执行文件：$source_script"
 done
-for material_target in "$installer_config" "$data_example" "$installer_readme" "$installer_install" "$installer_doctor" "$installer_uninstall" "$installer_lib"; do
+for material_target in "$installer_config" "$data_example" "$installer_readme" "$installer_setup" "$installer_install" "$installer_doctor" "$installer_uninstall" "$installer_lib"; do
   cc_require_regular_or_absent "$material_target" '安装材料目标'
   cc_require_absent "$material_target.next" '安装材料候选暂存路径'
 done
@@ -73,6 +74,7 @@ had_meta=0
 had_installer_config=0
 had_data_example=0
 had_installer_readme=0
+had_installer_setup=0
 had_installer_install=0
 had_installer_doctor=0
 had_installer_uninstall=0
@@ -85,6 +87,7 @@ had_installer_lib=0
 [ -f "$installer_config" ] && had_installer_config=1
 [ -f "$data_example" ] && had_data_example=1
 [ -f "$installer_readme" ] && had_installer_readme=1
+[ -f "$installer_setup" ] && had_installer_setup=1
 [ -f "$installer_install" ] && had_installer_install=1
 [ -f "$installer_doctor" ] && had_installer_doctor=1
 [ -f "$installer_uninstall" ] && had_installer_uninstall=1
@@ -96,7 +99,7 @@ cc_restrict_private_dir "$root/data"
 cc_restrict_private_dir "$root/backups"
 
 needs_backup=0
-for existing_flag in "$had_runtime" "$had_plist" "$had_meta" "$had_installer_config" "$had_data_example" "$had_installer_readme" "$had_installer_install" "$had_installer_doctor" "$had_installer_uninstall" "$had_installer_lib"; do
+for existing_flag in "$had_runtime" "$had_plist" "$had_meta" "$had_installer_config" "$had_data_example" "$had_installer_readme" "$had_installer_setup" "$had_installer_install" "$had_installer_doctor" "$had_installer_uninstall" "$had_installer_lib"; do
   [ "$existing_flag" -eq 0 ] || needs_backup=1
 done
 backup_dir=
@@ -109,6 +112,7 @@ if [ "$needs_backup" -eq 1 ]; then
   [ "$had_installer_config" -eq 0 ] || cp -p "$installer_config" "$backup_dir/materials/installer/config.example.toml"
   [ "$had_data_example" -eq 0 ] || cp -p "$data_example" "$backup_dir/materials/data/config.example.toml"
   [ "$had_installer_readme" -eq 0 ] || cp -p "$installer_readme" "$backup_dir/materials/installer/README.md"
+  [ "$had_installer_setup" -eq 0 ] || cp -p "$installer_setup" "$backup_dir/materials/installer/setup.sh"
   [ "$had_installer_install" -eq 0 ] || cp -p "$installer_install" "$backup_dir/materials/installer/install.sh"
   [ "$had_installer_doctor" -eq 0 ] || cp -p "$installer_doctor" "$backup_dir/materials/installer/doctor.sh"
   [ "$had_installer_uninstall" -eq 0 ] || cp -p "$installer_uninstall" "$backup_dir/materials/installer/uninstall.sh"
@@ -127,13 +131,14 @@ restore_material() {
 
 rollback_transaction() {
   set +e
-  rm -f "$runtime_path.next" "$installer_config.next" "$data_example.next" "$installer_readme.next" \
+  rm -f "$runtime_path.next" "$installer_config.next" "$data_example.next" "$installer_readme.next" "$installer_setup.next" \
     "$installer_install.next" "$installer_doctor.next" "$installer_uninstall.next" "$installer_lib.next"
   if [ "$daemon_install_started" -eq 1 ]; then cc_bootout_launchagent; fi
   if [ "$had_runtime" -eq 1 ]; then cp -p "$backup_dir/runtime-cc-connect" "$runtime_path"; else rm -f "$runtime_path"; fi
   restore_material "$had_installer_config" "$backup_dir/materials/installer/config.example.toml" "$installer_config"
   restore_material "$had_data_example" "$backup_dir/materials/data/config.example.toml" "$data_example"
   restore_material "$had_installer_readme" "$backup_dir/materials/installer/README.md" "$installer_readme"
+  restore_material "$had_installer_setup" "$backup_dir/materials/installer/setup.sh" "$installer_setup"
   restore_material "$had_installer_install" "$backup_dir/materials/installer/install.sh" "$installer_install"
   restore_material "$had_installer_doctor" "$backup_dir/materials/installer/doctor.sh" "$installer_doctor"
   restore_material "$had_installer_uninstall" "$backup_dir/materials/installer/uninstall.sh" "$installer_uninstall"
@@ -167,6 +172,7 @@ install -m 700 "$binary_path" "$runtime_path.next"
 install -m 644 "$script_dir/config.example.toml" "$installer_config.next"
 install -m 644 "$script_dir/config.example.toml" "$data_example.next"
 install -m 644 "$readme_path" "$installer_readme.next"
+install -m 700 "$script_dir/setup.sh" "$installer_setup.next"
 install -m 700 "$script_dir/install.sh" "$installer_install.next"
 install -m 700 "$script_dir/doctor.sh" "$installer_doctor.next"
 install -m 700 "$script_dir/uninstall.sh" "$installer_uninstall.next"
@@ -176,6 +182,7 @@ install -m 700 "$script_dir/lib.sh" "$installer_lib.next"
 mv "$installer_config.next" "$installer_config"
 mv "$data_example.next" "$data_example"
 mv "$installer_readme.next" "$installer_readme"
+mv "$installer_setup.next" "$installer_setup"
 mv "$installer_install.next" "$installer_install"
 mv "$installer_doctor.next" "$installer_doctor"
 mv "$installer_uninstall.next" "$installer_uninstall"

@@ -71,6 +71,7 @@ git -C "$repo_root" archive --format=tar HEAD \
   ':(exclude)docs/superpowers' | tar -xf - -C "$source_dir"
 
 install -m 755 \
+  "$repo_root/packaging/macos/setup.sh" \
   "$repo_root/packaging/macos/bootstrap.sh" \
   "$repo_root/packaging/macos/install.sh" \
   "$repo_root/packaging/macos/doctor.sh" \

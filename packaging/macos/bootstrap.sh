@@ -104,6 +104,7 @@ for required_input in \
   "$script_dir/checksums.txt" \
   "$script_dir/VERSION" \
   "$script_dir/go-toolchains.txt" \
+  "$script_dir/setup.sh" \
   "$script_dir/install.sh" \
   "$script_dir/source/go.mod"
 do
@@ -111,6 +112,7 @@ do
     die "安装包输入必须是非软链接普通文件：$required_input"
 done
 [ -x "$script_dir/bootstrap.sh" ] || die 'bootstrap.sh 不可执行'
+[ -x "$script_dir/setup.sh" ] || die 'setup.sh 不可执行'
 [ -x "$script_dir/install.sh" ] || die 'install.sh 不可执行'
 [ -x "$install_cmd" ] && [ -f "$install_cmd" ] && [ ! -L "$install_cmd" ] || \
   die "安装委托程序必须是非软链接普通可执行文件：$install_cmd"

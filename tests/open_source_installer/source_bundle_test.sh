@@ -21,11 +21,12 @@ first=$first_dist/cc-connect-source-install
 second=$second_dist/cc-connect-source-install
 
 for required in \
-  README.md LICENSE VERSION checksums.txt bootstrap.sh install.sh doctor.sh uninstall.sh \
+  README.md LICENSE VERSION checksums.txt setup.sh bootstrap.sh install.sh doctor.sh uninstall.sh \
   source/go.mod source/README.md source/README.zh-CN.md source/AGENT_INSTALL.md source/config.example.toml
 do
   assert_file "$first/$required"
 done
+[ -x "$first/setup.sh" ] || fail 'setup.sh is not executable'
 
 assert_dir "$first/source/agent/codex"
 assert_dir "$first/source/platform/feishu"
