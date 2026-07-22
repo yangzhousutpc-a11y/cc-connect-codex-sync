@@ -1580,6 +1580,7 @@ Commands:
 
   config             Manage configuration
     example          Print a complete annotated config.toml example
+    init             Create a minimal Codex config without overwriting
     format           Format the config file (alias: fmt)
     path             Print the resolved config file path
 

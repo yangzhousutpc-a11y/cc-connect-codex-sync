@@ -656,6 +656,117 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// InitCodexConfig creates a minimal Codex project configuration without
+// platforms. Platform setup commands can then populate the same file using
+// permissive loading. The destination is created atomically and never
+// overwritten.
+func InitCodexConfig(path, projectName, workDir string) error {
+	projectName = strings.TrimSpace(projectName)
+	if projectName == "" {
+		return fmt.Errorf("project name is required")
+	}
+	if !filepath.IsAbs(workDir) {
+		return fmt.Errorf("work directory must be an absolute path")
+	}
+	workInfo, err := os.Stat(workDir)
+	if err != nil {
+		return fmt.Errorf("inspect work directory: %w", err)
+	}
+	if !workInfo.IsDir() {
+		return fmt.Errorf("work directory is not a directory: %s", workDir)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("config path must be an absolute path")
+	}
+	parent := filepath.Dir(filepath.Clean(path))
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return fmt.Errorf("inspect config parent directory: %w", err)
+	}
+	if !parentInfo.IsDir() {
+		return fmt.Errorf("config parent is not a directory: %s", parent)
+	}
+	physicalParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return fmt.Errorf("resolve config parent directory: %w", err)
+	}
+	physicalPath := filepath.Join(physicalParent, filepath.Base(path))
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("config path already exists: %s", path)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect config path: %w", err)
+	}
+
+	type initialOptions struct {
+		Cmd             string `toml:"cmd"`
+		WorkDir         string `toml:"work_dir"`
+		Backend         string `toml:"backend"`
+		AppServerURL    string `toml:"app_server_url"`
+		DesktopLiveSync bool   `toml:"desktop_live_sync"`
+		Mode            string `toml:"mode"`
+	}
+	type initialAgent struct {
+		Type    string         `toml:"type"`
+		Options initialOptions `toml:"options"`
+	}
+	type initialProject struct {
+		Name  string       `toml:"name"`
+		Agent initialAgent `toml:"agent"`
+	}
+	type initialConfig struct {
+		Log      LogConfig        `toml:"log"`
+		Projects []initialProject `toml:"projects"`
+	}
+
+	cfg := initialConfig{
+		Log: LogConfig{Level: "info"},
+		Projects: []initialProject{{
+			Name: projectName,
+			Agent: initialAgent{
+				Type: "codex",
+				Options: initialOptions{
+					Cmd:             "codex",
+					WorkDir:         workDir,
+					Backend:         "app_server",
+					AppServerURL:    "stdio",
+					DesktopLiveSync: true,
+					Mode:            "suggest",
+				},
+			},
+		}},
+	}
+	var encoded strings.Builder
+	if err := toml.NewEncoder(&encoded).Encode(cfg); err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(physicalParent, ".config-init-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("restrict temporary config: %w", err)
+	}
+	if _, err := tmp.WriteString(formatTOML(encoded.String())); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temporary config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync temporary config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary config: %w", err)
+	}
+	if err := os.Link(tmpPath, physicalPath); err != nil {
+		return fmt.Errorf("create config without overwrite: %w", err)
+	}
+	return nil
+}
+
 var envPlaceholderPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 func resolveEnvInConfig(cfg *Config) {

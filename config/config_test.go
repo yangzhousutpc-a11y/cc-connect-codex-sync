@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -2852,6 +2853,92 @@ func TestFormatConfigFile(t *testing.T) {
 			t.Error("expected error for invalid TOML")
 		}
 	})
+}
+
+func TestInitCodexConfig(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), `项目 "一"`)
+	if err := os.Mkdir(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "config.toml")
+	project := `项目 "甲"`
+
+	if err := InitCodexConfig(target, project, workDir); err != nil {
+		t.Fatalf("InitCodexConfig() error: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("config mode = %o, want 600", got)
+	}
+	cfg, err := LoadPermissive(target)
+	if err != nil {
+		t.Fatalf("LoadPermissive() error: %v", err)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(cfg.Projects))
+	}
+	got := cfg.Projects[0]
+	if got.Name != project || got.Agent.Type != "codex" {
+		t.Fatalf("project = %#v", got)
+	}
+	wantOptions := map[string]any{
+		"cmd":               "codex",
+		"work_dir":          workDir,
+		"backend":           "app_server",
+		"app_server_url":    "stdio",
+		"desktop_live_sync": true,
+		"mode":              "suggest",
+	}
+	if !reflect.DeepEqual(got.Agent.Options, wantOptions) {
+		t.Fatalf("agent options = %#v, want %#v", got.Agent.Options, wantOptions)
+	}
+	if len(got.Platforms) != 0 {
+		t.Fatalf("platforms = %#v, want none", got.Platforms)
+	}
+}
+
+func TestInitCodexConfigRejectsUnsafeInputs(t *testing.T) {
+	workDir := t.TempDir()
+	tests := []struct {
+		name    string
+		project string
+		workDir string
+		prepare func(t *testing.T, target string)
+	}{
+		{name: "empty project", project: "   ", workDir: workDir},
+		{name: "relative work dir", project: "demo", workDir: "relative"},
+		{name: "missing work dir", project: "demo", workDir: filepath.Join(t.TempDir(), "missing")},
+		{name: "existing target", project: "demo", workDir: workDir, prepare: func(t *testing.T, target string) {
+			if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "symlink target", project: "demo", workDir: workDir, prepare: func(t *testing.T, target string) {
+			if err := os.Symlink(filepath.Join(filepath.Dir(target), "elsewhere"), target); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "config.toml")
+			if tc.prepare != nil {
+				tc.prepare(t, target)
+			}
+			if err := InitCodexConfig(target, tc.project, tc.workDir); err == nil {
+				t.Fatal("InitCodexConfig() error = nil, want rejection")
+			}
+			if tc.name == "existing target" {
+				data, err := os.ReadFile(target)
+				if err != nil || string(data) != "keep" {
+					t.Fatalf("existing target changed: data=%q err=%v", data, err)
+				}
+			}
+		})
+	}
 }
 
 func TestResolveProviderRefs(t *testing.T) {
