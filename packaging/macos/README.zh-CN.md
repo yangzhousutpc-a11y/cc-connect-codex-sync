@@ -1,6 +1,6 @@
 # cc-connect macOS 本地源码安装包
 
-这个安装包面向希望在本机从公开源码构建 cc-connect 的 macOS 用户。`bootstrap.sh` 会先校验安装包，在临时目录中编译当前 Mac 架构的程序，再通过统一安装脚本安装到 `~/cc-connect`；它不会使用安装包外的预编译 cc-connect 程序。
+这个安装包面向希望在本机从公开源码构建 cc-connect 的 macOS 用户。普通用户只需运行 `./setup.sh`；向导会调用现有的校验、构建、安装和诊断组件，不使用安装包外的预编译 cc-connect 程序。
 
 ## 安装要求与边界
 
@@ -10,14 +10,24 @@
 - 至少预留约 1 GB 临时空间。
 - 用户不需要预装 Go。系统没有兼容 Go 时，脚本会下载经过 SHA-256 校验的临时工具链，并在本轮结束时清理它。
 
-这不是零配置产品。安装程序不会替你生成平台凭据：首次安装必须填写 `config.toml`，并完成飞书和微信授权后才能激活服务。安装包不包含任何旧电脑的账号密钥、Token、微信登录状态、历史会话、日志或定时任务。
+向导会安全生成 Codex 最小配置，但不会替你生成平台凭据。首次安装仍需本人完成飞书授权或微信扫码。安装包不包含任何旧电脑的账号密钥、Token、微信登录状态、历史会话、日志或定时任务。
 
-## 完整安装流程
+## 一键安装流程
 
-解压发行包后，目录名应为 `cc-connect-source-install`。按以下顺序执行；不要跳过首次构建后的配置和授权步骤：
+解压发行包后，目录名应为 `cc-connect-source-install`：
 
 ```bash
 cd cc-connect-source-install
+./setup.sh
+```
+
+首次安装时选择飞书、个人微信或两者，输入项目名称和 Codex 工作目录，然后完成平台授权。检测到已有 `~/cc-connect/data/config.toml` 时，向导会先征求确认，再保留配置、会话、日志和登录状态进行安全升级。
+
+## 高级手动安装
+
+仅在排障或开发时按顺序执行底层命令：
+
+```bash
 ./bootstrap.sh
 install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.toml
 # 编辑 ~/cc-connect/data/config.toml 后，将 my-project 替换为配置中的项目名
@@ -27,13 +37,7 @@ install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.to
 ./doctor.sh
 ```
 
-1. 第一次运行 `./bootstrap.sh` 会校验安装包和工具链、本地编译并安装程序，但不会激活后台服务。
-2. 使用上面的 `install -m 600` 命令创建仅当前用户可读写的正式配置，然后编辑 `~/cc-connect/data/config.toml`。至少确认 Codex Agent 类型和工作目录、飞书的 `app_id` 与 `app_secret`、微信平台配置，以及实际使用的其他平台或模型配置。
-3. 把命令中的 `my-project` 替换为 `config.toml` 中的项目名，然后执行两条 `setup` 命令：按照终端提示完成飞书应用授权和微信扫码登录，不要复用或传播其他设备的 Token 与登录状态。详细步骤见安装包内的 `source/docs/feishu.md` 和 `source/docs/weixin.md`；安装后对应副本位于 `~/cc-connect/installer/source/docs/`。
-4. 再运行 `./bootstrap.sh --activate`，让同一套已校验源码重新构建并激活 launchd 服务。
-5. 运行 `./doctor.sh`，然后分别发送一条飞书和微信测试消息，确认接收、Codex 会话路由和回复均正常。
-
-以后可以从当前安装包目录运行脚本，也可以使用安装后保留在 `~/cc-connect/installer` 的副本。
+详细平台步骤见安装包内的 `source/docs/feishu.md` 和 `source/docs/weixin.md`。以后可以从当前安装包目录重新运行 `./setup.sh`；安装后也会在 `~/cc-connect/installer` 保留该入口。
 
 ## 以后需要卸载时
 
@@ -60,11 +64,11 @@ install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.to
 
 - **checksum / 校验失败：** 停止使用当前目录。从项目官方发布页重新下载并完整解压，不要混用两次下载的文件，也不要手改 `checksums.txt`。
 - **download / 下载失败：** 检查网络、代理、DNS 和对 `go.dev` 的访问；清理磁盘空间后重试。失败退出会清理本轮下载的临时 Go。
-- **build / 构建失败：** 确认 macOS 和架构受支持、可用临时空间约 1 GB，并允许 Go 获取模块；保留完整错误信息，修复网络或空间问题后再次运行 `./bootstrap.sh`。
+- **build / 构建失败：** 确认 macOS 和架构受支持、可用临时空间约 1 GB，并允许 Go 获取模块；保留完整错误信息，修复网络或空间问题后再次运行 `./setup.sh`。
 - **login / Codex 登录失败：** 先在当前 macOS 用户的终端完成 Codex CLI 官方登录流程，并确认能正常启动会话，再重新激活。后台服务不能代替你完成登录。
 - **config / 配置失败：** 将 `~/cc-connect/data/config.toml` 与 `~/cc-connect/data/config.example.toml` 对照，修正 TOML 层级和必填项，并保持权限为 `600`。已有配置不要用示例文件覆盖。
 - **platform / 平台失败：** 飞书检查应用凭据、事件订阅和机器人权限；微信重新完成扫码授权并确认登录状态有效。每次只排查一个平台，修复后先发送测试消息。
-- **doctor / 诊断失败：** 按 `./doctor.sh` 标出的失败项处理，检查 `~/.local/bin` 是否在 `PATH`、launchd 服务是否运行，以及 `~/cc-connect/data/logs/cc-connect.log` 的脱敏错误。修复后重新运行 `./bootstrap.sh --activate` 和 `./doctor.sh`；仍无法恢复时再提交脱敏 Issue。
+- **doctor / 诊断失败：** 按 `./doctor.sh` 标出的失败项处理，检查 `~/.local/bin` 是否在 `PATH`、launchd 服务是否运行，以及 `~/cc-connect/data/logs/cc-connect.log` 的脱敏错误。修复后重新运行 `./setup.sh`；仍无法恢复时再提交脱敏 Issue。
 
 ## 安装后的目录
 

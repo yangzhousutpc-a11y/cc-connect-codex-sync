@@ -80,10 +80,25 @@ The repository contains only Codex, Feishu, personal Weixin, and their required 
 
 ## Choose the right download
 
-- **Regular users:** use the Agent-guided installation below, or download `cc-connect-codex-sync-*-macos-source.tar.gz` from [Releases](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases) for manual installation. The matching `.sha256` file only verifies download integrity; it is not a second installer.
+- **Regular users:** download the archive from [Releases](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases), extract it, and run `./setup.sh`. The matching `.sha256` file only verifies download integrity; it is not a second installer.
 - **Developers:** clone this repository to build, test, or contribute from source. Release archives are distribution artifacts and are not committed to the source repository.
 
-## Agent-guided installation (recommended)
+## One-command macOS installation (recommended)
+
+Requirements: macOS 12 or later, network access, and an installed and authenticated Codex CLI. Go does not need to be preinstalled; the installer downloads and verifies a temporary toolchain when necessary.
+
+After downloading the latest archive and matching `.sha256` file, run:
+
+```bash
+shasum -a 256 -c cc-connect-codex-sync-*-macos-source.tar.gz.sha256
+tar -xzf cc-connect-codex-sync-*-macos-source.tar.gz
+cd cc-connect-source-install
+./setup.sh
+```
+
+On a fresh installation, the wizard asks which platform to enable, the project name, and the Codex work directory, then pauses for Feishu authorization or Weixin QR login. When a configuration already exists, it asks for confirmation and performs a safe upgrade while preserving configuration, sessions, and login state.
+
+## Agent-guided installation (alternative)
 
 For macOS users who already have an installed and authenticated Codex CLI. Copy this single command to start an interactive Codex installation session:
 
@@ -91,18 +106,13 @@ For macOS users who already have an installed and authenticated Codex CLI. Copy 
 CC_CONNECT_AGENT_PROMPT="$(curl -fsSL https://raw.githubusercontent.com/yangzhousutpc-a11y/cc-connect-codex-sync/main/AGENT_INSTALL.md)" && [ -n "$CC_CONNECT_AGENT_PROMPT" ] && codex -C "$HOME" -s workspace-write -a on-request "$CC_CONNECT_AGENT_PROMPT"
 ```
 
-The Agent handles download, checksum verification, build, installation, activation, and diagnostics. It pauses for Feishu credentials, Weixin QR login, and macOS permission decisions. See the complete [Agent installation task](AGENT_INSTALL.md) for behavior and safety boundaries. This method does not bypass Codex approvals or disable sandboxing.
+The Agent downloads and verifies the release, then invokes the same `./setup.sh` wizard. It pauses for Feishu credentials, Weixin QR login, and macOS permission decisions. See the complete [Agent installation task](AGENT_INSTALL.md) for behavior and safety boundaries. This method does not bypass Codex approvals or disable sandboxing.
 
-## Manual macOS installation
+## Advanced manual installation
 
-Requirements: macOS 12 or later, network access, and an installed and authenticated Codex CLI. Go does not need to be preinstalled; the installer downloads and verifies a temporary toolchain when necessary.
-
-Download the latest archive and matching `.sha256` file from [Releases](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases):
+Use these lower-level steps only for development or troubleshooting:
 
 ```bash
-shasum -a 256 -c cc-connect-codex-sync-*-macos-source.tar.gz.sha256
-tar -xzf cc-connect-codex-sync-*-macos-source.tar.gz
-cd cc-connect-source-install
 ./bootstrap.sh
 
 install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.toml

@@ -22,19 +22,7 @@
 
 ## 执行流程
 
-### 1. 确认用户选择
-
-开始时简要说明：自动步骤包括下载、校验、构建、安装、激活和诊断；飞书凭据、微信扫码及 macOS 权限必须由用户本人确认。
-
-询问并确认以下信息：
-
-- 启用飞书、个人微信，还是两者都启用；
-- cc-connect 项目名称；
-- Codex 使用的绝对工作目录。
-
-不要猜测这些值，也不要把示例值写入正式配置。
-
-### 2. 只读预检
+### 1. 只读预检
 
 检查并报告结论，不输出敏感环境变量：
 
@@ -47,7 +35,7 @@
 
 预检不通过时停止在对应步骤，给出最小修复方式，不开始安装。
 
-### 3. 下载并校验最新 Release
+### 2. 下载并校验最新 Release
 
 使用 `mktemp -d` 创建本轮专用临时目录，并确保结束或中断时只清理这个已解析的临时目录。
 
@@ -59,47 +47,19 @@ shasum -a 256 -c cc-connect-codex-sync-*-macos-source.tar.gz.sha256
 
 只有校验明确返回成功才能继续。不要自行生成新的校验文件，也不要接受文件名与校验记录不一致。
 
-### 4. 解压并调用现有安装器
+### 3. 解压并调用一键向导
 
 在临时目录解压安装包，确认只得到预期的 `cc-connect-source-install` 目录。先阅读其中的 `README.md` 和 `VERSION`，然后在该目录运行：
 
 ```bash
-./bootstrap.sh
+./setup.sh
 ```
 
-不要重写、替换或绕过安装包内的 `bootstrap.sh`、`install.sh`、`lib.sh` 和校验清单。已有安装必须沿用安装器自身的事务切换、备份和失败回滚。
+不要自行重复询问平台、项目名称和工作目录；向导会在需要时直接向用户询问。飞书授权、微信扫码或 macOS 权限确认出现时暂停，让用户本人完成。不要重写、替换或绕过安装包内的 `setup.sh`、`bootstrap.sh`、`install.sh`、`lib.sh` 和校验清单。已有安装必须沿用向导的升级分支及安装器自身的事务切换、备份和失败回滚。
 
-### 5. 配置所选平台
+向导结束后确认只有一个 cc-connect 服务实例，runtime、配置和 launchd 指向 `~/cc-connect` 的统一目录。诊断失败时先处理明确失败项，再重新运行 `./setup.sh`；不要通过删除用户数据重装来掩盖问题。
 
-如果 `~/cc-connect/data/config.toml` 已存在，只核对必要字段，不覆盖整个文件。如果不存在，运行：
-
-```bash
-install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.toml
-```
-
-引导用户把已确认的项目名称和绝对工作目录写入配置。随后只对用户选择的平台执行：
-
-```bash
-~/cc-connect/runtime/cc-connect feishu setup --project <项目名称>
-~/cc-connect/runtime/cc-connect weixin setup --project <项目名称>
-```
-
-- 飞书：让用户在本机提示中输入应用凭据，并按 `~/cc-connect/installer/source/docs/feishu.md` 检查机器人权限和事件订阅。
-- 微信：让用户本人扫描终端二维码，并按 `~/cc-connect/installer/source/docs/weixin.md` 完成个人微信登录。
-- macOS 弹出“文稿”或“桌面”访问请求时，说明触发访问的真实程序和用途，等待用户决定；不要代替用户扩大权限。
-
-### 6. 激活与诊断
-
-平台配置完成后，在已校验的安装包目录运行：
-
-```bash
-./bootstrap.sh --activate
-./doctor.sh
-```
-
-确认只有一个 cc-connect 服务实例，runtime、配置和 launchd 指向 `~/cc-connect` 的统一目录。诊断失败时先处理明确失败项，再重新诊断；不要通过删除用户数据重装来掩盖问题。
-
-### 7. 实机验收
+### 4. 实机验收
 
 请用户在每个已启用平台分别发送一条唯一测试消息，并检查：
 
