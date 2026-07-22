@@ -1,0 +1,49 @@
+# cc-connect Codex Sync minimal configuration
+# 只包含 Codex、飞书和个人微信。
+
+language = "zh"
+
+[log]
+level = "info"
+
+[[projects]]
+name = "my-project"
+
+# 可选：仅允许这些用户执行 /dir、/shell、/restart 等管理命令。
+# 先在飞书或微信中发送 /whoami 获取用户 ID；不要在多人环境使用 "*"。
+# admin_from = "your-user-id"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "/absolute/path/to/your/project"
+cmd = "codex"
+backend = "app_server"
+app_server_url = "stdio"
+desktop_live_sync = true
+mode = "suggest" # suggest | auto-edit | full-auto | yolo
+# model = "gpt-5"
+# reasoning_effort = "high"
+
+# 飞书：运行 `cc-connect feishu setup --project my-project` 完成配置。
+[[projects.platforms]]
+type = "feishu"
+
+[projects.platforms.options]
+app_id = "your-feishu-app-id"
+app_secret = "your-feishu-app-secret"
+allow_from = "*"
+allow_chat = "*"
+group_reply_all = false
+reply_to_trigger = true
+
+# 个人微信：运行 `cc-connect weixin setup --project my-project` 扫码授权。
+[[projects.platforms]]
+type = "weixin"
+
+[projects.platforms.options]
+token = "your-ilink-bot-bearer-token"
+base_url = "https://ilinkai.weixin.qq.com"
+allow_from = "*"
+account_id = "default"

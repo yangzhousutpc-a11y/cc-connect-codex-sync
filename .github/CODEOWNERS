@@ -1,0 +1,53 @@
+# CODEOWNERS for cc-connect.
+#
+# GitHub uses this file to auto-request reviews from listed owners
+# whenever a PR touches the matching paths.
+#
+# Project owner / default reviewer.
+*                                   @yangzhousutpc-a11y
+
+# ---------------------------------------------------------------------------
+# Critical paths — changes here should be reviewed with extra care because
+# regressions in these files have historically caused user-visible bugs
+# (e.g. cmdSwitch wiping /history) that escaped per-function unit coverage.
+#
+# Reviewers touching these files should also run the Critical User Journey
+# tests locally:
+#
+#     go test ./core/ -run TestCUJ
+#
+# and confirm the corresponding CUJ test was updated (or a new CUJ added)
+# if user-visible behavior changes. See AGENTS.md → "Critical User
+# Journeys (CUJ)" for details.
+# ---------------------------------------------------------------------------
+
+# Engine core: message routing, command handling, interactive state.
+/core/engine.go                     @yangzhousutpc-a11y
+/core/engine_test.go                @yangzhousutpc-a11y
+
+# Session manager: persistence, history, agent_session_id binding.
+/core/session.go                    @yangzhousutpc-a11y
+/core/session_test.go               @yangzhousutpc-a11y
+
+# Scheduled task implementations.
+/core/cron.go                       @yangzhousutpc-a11y
+/core/cron_test.go                  @yangzhousutpc-a11y
+/core/timer.go                      @yangzhousutpc-a11y
+/core/timer_test.go                 @yangzhousutpc-a11y
+
+# Permission flow + bridge that talks to the agent.
+/core/bridge.go                     @yangzhousutpc-a11y
+/core/interfaces.go                 @yangzhousutpc-a11y
+
+# i18n strings — user-facing copy must be reviewed for clarity and
+# all-language consistency.
+/core/i18n.go                       @yangzhousutpc-a11y
+
+# CUJ test framework itself — guards against regressions in the
+# tests that guard against regressions.
+/core/cuj_test.go                   @yangzhousutpc-a11y
+
+# Build / CI / project policy.
+/AGENTS.md                          @yangzhousutpc-a11y
+/.github/                           @yangzhousutpc-a11y
+/Makefile                           @yangzhousutpc-a11y
