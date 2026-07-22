@@ -22,7 +22,7 @@ second=$second_dist/cc-connect-source-install
 
 for required in \
   README.md LICENSE VERSION checksums.txt bootstrap.sh install.sh doctor.sh uninstall.sh \
-  source/go.mod source/README.md source/README.zh-CN.md source/config.example.toml
+  source/go.mod source/README.md source/README.zh-CN.md source/AGENT_INSTALL.md source/config.example.toml
 do
   assert_file "$first/$required"
 done
