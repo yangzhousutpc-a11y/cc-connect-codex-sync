@@ -63,6 +63,9 @@ dist/
 build/
 bin/
 release/
+# Local copies downloaded from GitHub Releases
+/cc-connect-codex-sync-*-macos-source.tar.gz
+/cc-connect-codex-sync-*-macos-source.tar.gz.sha256
 # Keep web/dist directory (for embedded admin UI) but ignore build artifacts
 web/dist/*
 !web/dist/.keep

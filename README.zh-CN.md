@@ -8,6 +8,11 @@
 
 一份只连接 **Codex、飞书和个人微信** 的独立源码项目，让三个入口共享稳定的会话路由，并保持消息双向可见。
 
+## 如何选择
+
+- **普通用户：** 从 [Releases](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases) 下载 `cc-connect-codex-sync-*-macos-source.tar.gz`，解压后按照下方安装步骤操作。对应的 `.sha256` 文件仅用于校验下载是否完整，不是第二个安装包。
+- **开发者：** 克隆本仓库，在源码目录中构建、测试或参与开发。Release 安装包属于发布产物，不提交到源码仓库。
+
 ## 核心能力
 
 - **飞书 ↔ Codex App**：飞书群消息进入对应 Codex 会话；Codex App 中的用户消息与 Codex 回复同步回原群。

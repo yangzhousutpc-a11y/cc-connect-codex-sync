@@ -8,6 +8,11 @@ English | [简体中文](README.zh-CN.md)
 
 A standalone source project that connects only **Codex, Feishu, and personal Weixin**, with stable conversation routing and bidirectional message visibility across all three entry points.
 
+## Choose the right download
+
+- **Regular users:** download `cc-connect-codex-sync-*-macos-source.tar.gz` from [Releases](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases), extract it, and follow the installation steps below. The matching `.sha256` file only verifies download integrity; it is not a second installer.
+- **Developers:** clone this repository to build, test, or contribute from source. Release archives are distribution artifacts and are not committed to the source repository.
+
 ## Core capabilities
 
 - **Feishu ↔ Codex App:** Feishu group messages enter the matching Codex conversation; Codex App user messages and Codex replies are relayed to the original group.
