@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,7 @@ type Platform struct {
 	heartbeatInterval time.Duration
 	ackTimeout        time.Duration
 	maxMessageBytes   int
+	httpClient        *http.Client
 
 	startMu sync.Mutex
 	started bool
@@ -116,10 +118,10 @@ type wsMsgCallbackBody struct {
 		Text    string `json:"text,omitempty"`
 		Content string `json:"content,omitempty"`
 	} `json:"voice"`
-	Image      json.RawMessage `json:"image,omitempty"`
-	File       json.RawMessage `json:"file,omitempty"`
-	Mixed      json.RawMessage `json:"mixed,omitempty"`
-	CreateTime int64           `json:"create_time"`
+	Image      *wsMediaBlock `json:"image,omitempty"`
+	File       *wsMediaBlock `json:"file,omitempty"`
+	Mixed      *wsMixedBlock `json:"mixed,omitempty"`
+	CreateTime int64         `json:"create_time"`
 }
 
 type ackResult struct {
@@ -157,6 +159,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		heartbeatInterval: defaultHeartbeat,
 		ackTimeout:        defaultAckTimeout,
 		maxMessageBytes:   defaultMaxMessageBytes,
+		httpClient:        http.DefaultClient,
 		done:              make(chan struct{}),
 		pendingAcks:       make(map[string]chan ackResult),
 		inboundAdmissions: make(map[string]inboundBarrier),
@@ -403,6 +406,7 @@ func (p *Platform) handleMsgCallback(frame wsFrame) {
 	}
 	var content string
 	fromVoice := false
+	var mediaParts []inboundMediaPart
 	switch body.MsgType {
 	case "text":
 		content = body.Text.Content
@@ -413,14 +417,16 @@ func (p *Platform) handleMsgCallback(frame wsFrame) {
 		}
 		fromVoice = true
 	case "image", "file", "mixed":
-		slog.Info("wecom: media message is not supported yet", "msg_type", body.MsgType)
-		return
+		mediaParts = collectInboundMediaParts(&body)
+		if len(mediaParts) == 0 {
+			return
+		}
 	default:
 		slog.Info("wecom: unsupported message type", "msg_type", body.MsgType)
 		return
 	}
 	content = stripWeComAtMentions(content, p.botID, body.AibotID)
-	if content == "" {
+	if content == "" && len(mediaParts) == 0 {
 		return
 	}
 
@@ -445,7 +451,13 @@ func (p *Platform) handleMsgCallback(frame wsFrame) {
 		},
 		DispatchAdmission: admission,
 	}
-	p.admitInbound(sessionKey, message)
+	if len(mediaParts) == 0 {
+		p.admitInbound(sessionKey, message)
+		return
+	}
+	p.admitInboundPrepared(sessionKey, message, func(ctx context.Context) {
+		p.populateInboundMedia(ctx, &body, message, mediaParts)
+	})
 }
 
 func inboundRoute(body wsMsgCallbackBody) (sessionKey, channelKey, chatName, targetID string, chatType int, ok bool) {
@@ -478,6 +490,14 @@ func shortID(id string) string {
 }
 
 func (p *Platform) admitInbound(sessionKey string, message *core.Message) {
+	p.admitInboundPrepared(sessionKey, message, nil)
+}
+
+func (p *Platform) admitInboundPrepared(
+	sessionKey string,
+	message *core.Message,
+	prepare func(context.Context),
+) {
 	handlerDone := make(chan struct{})
 	current := inboundBarrier{
 		admission:   message.DispatchAdmission,
@@ -502,6 +522,12 @@ func (p *Platform) admitInbound(sessionKey string, message *core.Message) {
 			}
 		}
 		defer close(handlerDone)
+		if prepare != nil {
+			prepare(ctx)
+			if message.Content == "" && len(message.Images) == 0 && len(message.Files) == 0 {
+				return
+			}
+		}
 		p.handler(p, message)
 	}()
 	go func() {
