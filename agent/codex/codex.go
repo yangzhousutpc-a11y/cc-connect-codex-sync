@@ -27,6 +27,7 @@ const (
 	conversationNamePrefix                = "[Codex]"
 	feishuConversationNamePrefix          = "[飞书-Codex]"
 	weixinConversationNamePrefix          = "[微信-Codex]"
+	wecomConversationNamePrefix           = "[企业微信-Codex]"
 	decoratedFeishuConversationNamePrefix = "🪽 [飞书-Codex]"
 	decoratedWeixinConversationNamePrefix = "💬 [微信-Codex]"
 )
@@ -42,6 +43,8 @@ func (a *Agent) FormatConversationNameForPlatform(platformName, name string) str
 		prefix = feishuConversationNamePrefix
 	case "weixin":
 		prefix = weixinConversationNamePrefix
+	case "wecom":
+		prefix = wecomConversationNamePrefix
 	}
 	return formatConversationName(prefix, name)
 }
@@ -56,6 +59,7 @@ func formatConversationName(prefix, name string) string {
 		decoratedWeixinConversationNamePrefix,
 		feishuConversationNamePrefix,
 		weixinConversationNamePrefix,
+		wecomConversationNamePrefix,
 		conversationNamePrefix,
 	} {
 		if len(name) >= len(knownPrefix) && strings.EqualFold(name[:len(knownPrefix)], knownPrefix) {

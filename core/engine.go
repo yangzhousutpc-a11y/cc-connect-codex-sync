@@ -6840,6 +6840,13 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 }
 
 func (e *Engine) cmdNew(p Platform, msg *Message, args []string) {
+	if provider, ok := p.(ManualNewConversationGuideProvider); ok {
+		if guide := strings.TrimSpace(provider.ManualNewConversationGuide()); guide != "" {
+			e.reply(p, msg.ReplyCtx, guide)
+			return
+		}
+	}
+
 	agent, sessions, _, workspaceDir, err := e.commandContextWithWorkspace(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))

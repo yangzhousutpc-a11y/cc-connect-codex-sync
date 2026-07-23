@@ -36,6 +36,12 @@ type ConversationSpawner interface {
 	SpawnConversation(ctx context.Context, req ConversationSpawnRequest) (SpawnedConversation, error)
 }
 
+// ManualNewConversationGuideProvider is an optional platform capability used
+// by /new to return read-only guidance without creating an external conversation.
+type ManualNewConversationGuideProvider interface {
+	ManualNewConversationGuide() string
+}
+
 // InPlaceConversationForker is an optional platform capability used by /new
 // when the platform can fork the current logical session without creating a
 // separate platform conversation.

@@ -33,6 +33,8 @@ func TestFormatConversationNameForPlatform(t *testing.T) {
 		{platform: "slack", input: "项目A", want: "[Codex] 项目A"},
 		{platform: "feishu", input: "[Codex] 项目A", want: "[飞书-Codex] 项目A"},
 		{platform: "weixin", input: "[微信-Codex] 项目A", want: "[微信-Codex] 项目A"},
+		{platform: "wecom", input: "企业微信群-ab12cd", want: "[企业微信-Codex] 企业微信群-ab12cd"},
+		{platform: "wecom", input: "[Codex] 项目A", want: "[企业微信-Codex] 项目A"},
 		{platform: "feishu", input: "🪽 [飞书-Codex] 项目A", want: "[飞书-Codex] 项目A"},
 		{platform: "weixin", input: "💬 [微信-Codex] 项目A", want: "[微信-Codex] 项目A"},
 		{platform: "feishu", input: "", want: ""},
