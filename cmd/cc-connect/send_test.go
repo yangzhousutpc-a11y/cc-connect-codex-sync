@@ -1,16 +1,133 @@
 package main
 
 import (
+	"context"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/yangzhousutpc-a11y/cc-connect-codex-sync/config"
 	"github.com/yangzhousutpc-a11y/cc-connect-codex-sync/core"
 )
 
+func TestRunSendHelperProcess(t *testing.T) {
+	if os.Getenv("CC_TEST_RUN_SEND_HELPER") != "1" {
+		return
+	}
+	separator := -1
+	for i, arg := range os.Args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	if separator < 0 {
+		t.Fatal("missing helper argument separator")
+	}
+	runSend(os.Args[separator+1:])
+}
+
+func startCountingSendServer(t *testing.T, dataDir string, activeSessions int) *atomic.Int32 {
+	t.Helper()
+	if activeSessions < 1 {
+		t.Fatal("test server requires at least one active session")
+	}
+	runDir := filepath.Join(dataDir, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", filepath.Join(runDir, "api.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sends atomic.Int32
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sends.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Test-Active-Sessions", strconv.Itoa(activeSessions))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		_ = server.Shutdown(context.Background())
+	})
+	return &sends
+}
+
+func helperProcessEnv(overrides map[string]string) []string {
+	env := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, replaced := overrides[name]; !replaced {
+			env = append(env, entry)
+		}
+	}
+	for name, value := range overrides {
+		env = append(env, name+"="+value)
+	}
+	return env
+}
+
+func setTestSendSession(t *testing.T) {
+	t.Helper()
+	t.Setenv("CC_SESSION_KEY", "test:session")
+	t.Setenv("CODEX_THREAD_ID", "")
+}
+
+func TestRunSend_MissingContextNeverCallsAPIWithActiveSessions(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		activeSessions int
+		threadID       string
+	}{
+		{name: "missing_thread_one_active_session", activeSessions: 1},
+		{name: "invalid_thread_one_active_session", activeSessions: 1, threadID: "not-a-trusted-thread-id"},
+		{name: "missing_thread_multiple_active_sessions", activeSessions: 2},
+		{name: "invalid_thread_multiple_active_sessions", activeSessions: 2, threadID: "not-a-trusted-thread-id"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dataDir, err := os.MkdirTemp("", "cc-send-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
+			sends := startCountingSendServer(t, dataDir, testCase.activeSessions)
+			cmd := exec.Command(os.Args[0],
+				"-test.run=^TestRunSendHelperProcess$",
+				"--",
+				"--data-dir", dataDir,
+				"--message", "hello",
+			)
+			cmd.Env = helperProcessEnv(map[string]string{
+				"CC_TEST_RUN_SEND_HELPER": "1",
+				"CC_PROJECT":              "",
+				"CC_SESSION_KEY":          "",
+				"CODEX_THREAD_ID":         testCase.threadID,
+			})
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("send unexpectedly succeeded with %d active sessions: %s", testCase.activeSessions, output)
+			}
+			if testCase.threadID != "" && strings.Contains(string(output), testCase.threadID) {
+				t.Fatalf("CLI error leaked invalid thread value: %s", output)
+			}
+			if got := sends.Load(); got != 0 {
+				t.Fatalf("API send calls = %d with %d active sessions, want 0", got, testCase.activeSessions)
+			}
+		})
+	}
+}
+
 func TestParseSendArgs_AttachmentsWithoutMessage(t *testing.T) {
+	setTestSendSession(t)
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "chart.png")
 	docPath := filepath.Join(dir, "report.txt")
@@ -49,6 +166,7 @@ func TestParseSendArgs_AttachmentsWithoutMessage(t *testing.T) {
 }
 
 func TestParseSendArgs_RequiresMessageOrAttachment(t *testing.T) {
+	setTestSendSession(t)
 	_, _, err := parseSendArgs(nil)
 	if err == nil {
 		t.Fatal("expected error for empty send args")
@@ -58,7 +176,7 @@ func TestParseSendArgs_RequiresMessageOrAttachment(t *testing.T) {
 func TestParseSendArgs_UsesSessionEnvFallback(t *testing.T) {
 	t.Setenv("CC_PROJECT", "demo")
 	t.Setenv("CC_SESSION_KEY", "telegram:123:456")
-	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
+	t.Setenv("CODEX_THREAD_ID", "not-a-trusted-thread-id")
 
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "chart.png")
@@ -100,7 +218,7 @@ func TestParseSendArgs_UsesCodexThreadFallbackWithoutSession(t *testing.T) {
 
 func TestParseSendArgs_ExplicitSessionBeatsCodexThreadFallback(t *testing.T) {
 	t.Setenv("CC_SESSION_KEY", "feishu:env-session")
-	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
+	t.Setenv("CODEX_THREAD_ID", "not-a-trusted-thread-id")
 
 	req, _, err := parseSendArgs([]string{"--session", "wecom:explicit-session", "--message", "hello"})
 	if err != nil {
@@ -114,20 +232,31 @@ func TestParseSendArgs_ExplicitSessionBeatsCodexThreadFallback(t *testing.T) {
 	}
 }
 
-func TestParseSendArgs_IgnoresInvalidCodexThreadFallback(t *testing.T) {
+func TestParseSendArgs_RejectsInvalidCodexThreadFallback(t *testing.T) {
 	t.Setenv("CC_SESSION_KEY", "")
 	t.Setenv("CODEX_THREAD_ID", "not-a-trusted-thread-id")
 
-	req, _, err := parseSendArgs([]string{"--message", "hello"})
-	if err != nil {
-		t.Fatalf("parseSendArgs returned error: %v", err)
+	_, _, err := parseSendArgs([]string{"--message", "hello"})
+	if err == nil {
+		t.Fatal("expected invalid Codex thread fallback to fail closed")
 	}
-	if req.AgentThreadID != "" {
-		t.Fatalf("agent thread ID = %q, want invalid fallback ignored", req.AgentThreadID)
+	if strings.Contains(err.Error(), "not-a-trusted-thread-id") {
+		t.Fatalf("error leaked invalid thread value: %v", err)
+	}
+}
+
+func TestParseSendArgs_RequiresSessionOrValidCodexThread(t *testing.T) {
+	t.Setenv("CC_SESSION_KEY", "")
+	t.Setenv("CODEX_THREAD_ID", "")
+
+	_, _, err := parseSendArgs([]string{"--message", "hello"})
+	if err == nil {
+		t.Fatal("expected missing session context to fail closed")
 	}
 }
 
 func TestParseSendArgs_WorkDirOption(t *testing.T) {
+	setTestSendSession(t)
 	workDir := t.TempDir()
 
 	req, _, err := parseSendArgs([]string{"--cwd", workDir, "--message", "please check"})
@@ -152,6 +281,7 @@ func TestParseSendArgs_WorkDirOption(t *testing.T) {
 // (which would route them through SendFile and skip
 // AudioSender / VideoSender). They each get their own slice.
 func TestParseSendArgs_AudioPopulatesAudios(t *testing.T) {
+	setTestSendSession(t)
 	dir := t.TempDir()
 	audioPath := filepath.Join(dir, "voice.opus")
 	if err := os.WriteFile(audioPath, []byte("opus"), 0o644); err != nil {
@@ -177,6 +307,7 @@ func TestParseSendArgs_AudioPopulatesAudios(t *testing.T) {
 }
 
 func TestParseSendArgs_VideoPopulatesVideos(t *testing.T) {
+	setTestSendSession(t)
 	dir := t.TempDir()
 	videoPath := filepath.Join(dir, "demo.mp4")
 	if err := os.WriteFile(videoPath, []byte("mp4"), 0o644); err != nil {
@@ -199,6 +330,7 @@ func TestParseSendArgs_VideoPopulatesVideos(t *testing.T) {
 }
 
 func TestParseSendArgs_AudioVideoFileMixed_StaySeparate(t *testing.T) {
+	setTestSendSession(t)
 	dir := t.TempDir()
 	audioPath := filepath.Join(dir, "voice.opus")
 	videoPath := filepath.Join(dir, "demo.mp4")
@@ -255,6 +387,7 @@ func TestParseSendArgs_TTSOnly(t *testing.T) {
 }
 
 func TestParseSendArgs_AudioRejectsNonAudio(t *testing.T) {
+	setTestSendSession(t)
 	dir := t.TempDir()
 	docPath := filepath.Join(dir, "report.txt")
 	if err := os.WriteFile(docPath, []byte("hello"), 0o644); err != nil {

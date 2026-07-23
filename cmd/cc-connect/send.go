@@ -181,6 +181,9 @@ func parseSendArgs(args []string) (core.SendRequest, string, error) {
 			req.AgentThreadID = threadID
 		}
 	}
+	if req.SessionKey == "" && req.AgentThreadID == "" {
+		return req, "", fmt.Errorf("send requires --session, CC_SESSION_KEY, or a valid Codex desktop context")
+	}
 	if req.Message == "" {
 		req.Message = strings.Join(positional, " ")
 	}
