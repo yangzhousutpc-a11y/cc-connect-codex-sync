@@ -12,10 +12,11 @@ import (
 	"github.com/yangzhousutpc-a11y/cc-connect-codex-sync/core"
 )
 
-func TestPollExternalConversationParsesDesktopImagesAndFilesWithoutForwardingPaths(t *testing.T) {
+func TestPollExternalConversationParsesDesktopImagesAndSanitizesFilesWithoutReadingThem(t *testing.T) {
 	codexHome, transcript, threadID := newDesktopMediaTranscript(t)
 	imagePath := writeDesktopMediaFile(t, "picture.png", []byte("\x89PNG\r\n\x1a\nimage"))
 	filePath := writeDesktopMediaFile(t, "report.txt", []byte("report"))
+	openCount := observeDesktopAttachmentOpens(t)
 
 	a := &Agent{codexHome: codexHome, desktopLiveSync: true}
 	initializeDesktopMediaPoll(t, a, threadID)
@@ -48,10 +49,8 @@ func TestPollExternalConversationParsesDesktopImagesAndFilesWithoutForwardingPat
 	}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("images = %#v, want %#v", got, want)
 	}
-	if got, want := user.Files, []core.FileAttachment{{
-		MimeType: "text/plain; charset=utf-8", Data: []byte("report"), FileName: "report.txt",
-	}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("files = %#v, want %#v", got, want)
+	if got := openCount(); got != 1 {
+		t.Fatalf("attachment opens = %d, want only the trusted local image", got)
 	}
 }
 
@@ -76,8 +75,9 @@ func TestDesktopLocalImagesRejectUnsafePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	event := desktopUserEvent("thread-safe-images", "safe body", []string{
-		"relative.png", regular, directory, missing, symlink, oversize,
+	event := materializeDesktopUserEvent("thread-safe-images", desktopRawUserEvent{
+		message:     "safe body",
+		localImages: []string{"relative.png", regular, directory, missing, symlink, oversize},
 	})
 	if len(event.Images) != 0 {
 		t.Fatalf("unsafe local images = %#v, want rejected", event.Images)
@@ -113,6 +113,7 @@ func TestPollExternalConversationPreservesDeferredDesktopAttachments(t *testing.
 	a := &Agent{codexHome: codexHome, desktopLiveSync: true}
 	initializeDesktopMediaPoll(t, a, threadID)
 	ticket := a.desktopOrigins.begin(threadID)
+	openCount := observeDesktopAttachmentOpens(t)
 	appendTranscript(t, transcript,
 		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-deferred-media"}}`,
 		desktopUserMessageJSON(t, "稍后发送", []string{imagePath}, nil),
@@ -120,6 +121,9 @@ func TestPollExternalConversationPreservesDeferredDesktopAttachments(t *testing.
 	)
 	if events, err := a.PollExternalConversation(context.Background(), threadID); err != nil || len(events) != 0 {
 		t.Fatalf("pending events = %#v, %v; want deferred", events, err)
+	}
+	if got := openCount(); got != 0 {
+		t.Fatalf("pending origin opened %d attachments, want zero", got)
 	}
 
 	a.desktopOrigins.cancel(ticket)
@@ -130,6 +134,9 @@ func TestPollExternalConversationPreservesDeferredDesktopAttachments(t *testing.
 	if len(events) != 2 || len(events[0].Images) != 1 || events[0].Content != "稍后发送" {
 		t.Fatalf("resolved deferred events = %#v", events)
 	}
+	if got := openCount(); got != 1 {
+		t.Fatalf("resolved external origin opened %d attachments, want one", got)
+	}
 }
 
 func TestPollExternalConversationDoesNotReadInternalOriginAttachments(t *testing.T) {
@@ -138,15 +145,12 @@ func TestPollExternalConversationDoesNotReadInternalOriginAttachments(t *testing
 	a := &Agent{codexHome: codexHome, desktopLiveSync: true}
 	initializeDesktopMediaPoll(t, a, threadID)
 	a.desktopOrigins.register(threadID, "turn-internal-media")
+	openCount := observeDesktopAttachmentOpens(t)
 	appendTranscript(t, transcript,
 		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-internal-media"}}`,
 		desktopUserMessageJSON(t, "内部消息", []string{imagePath}, nil),
 		`{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"内部回答"}}`,
 	)
-	if err := os.Remove(imagePath); err != nil {
-		t.Fatal(err)
-	}
-
 	events, err := a.PollExternalConversation(context.Background(), threadID)
 	if err != nil {
 		t.Fatal(err)
@@ -154,56 +158,60 @@ func TestPollExternalConversationDoesNotReadInternalOriginAttachments(t *testing
 	if len(events) != 0 {
 		t.Fatalf("internal-origin events = %#v, want fail-closed", events)
 	}
+	if got := openCount(); got != 0 {
+		t.Fatalf("internal origin opened %d attachments, want zero", got)
+	}
 }
 
-func TestDesktopFileListRejectsUnsafeOrNonMachinePaths(t *testing.T) {
+func TestDesktopFileBlocksAreSanitizedWithoutReadingAnyPaths(t *testing.T) {
 	regular := writeDesktopMediaFile(t, "valid.txt", []byte("valid"))
-	directory := t.TempDir()
 	missing := filepath.Join(t.TempDir(), "missing.txt")
-	symlink := filepath.Join(t.TempDir(), "link.txt")
-	if err := os.Symlink(regular, symlink); err != nil {
-		t.Fatal(err)
-	}
-	oversize := filepath.Join(t.TempDir(), "oversize.bin")
-	f, err := os.Create(oversize)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Truncate(desktopAttachmentMaxBytes + 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-	unreadable := writeDesktopMediaFile(t, "unreadable.txt", []byte("private"))
-	if err := os.Chmod(unreadable, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o600) })
+	openCount := observeDesktopAttachmentOpens(t)
 
 	tests := []struct {
 		name    string
 		message string
+		want    string
 	}{
-		{name: "fake prose", message: "# Files mentioned by the user:\n\nnot a machine entry: " + regular + "\n\nkeep this"},
-		{name: "relative", message: desktopFileMessage("keep relative", []desktopTestFile{{name: "valid.txt", path: "relative.txt"}})},
-		{name: "basename mismatch", message: desktopFileMessage("keep mismatch", []desktopTestFile{{name: "other.txt", path: regular}})},
-		{name: "missing", message: desktopFileMessage("keep missing", []desktopTestFile{{name: "missing.txt", path: missing}})},
-		{name: "directory", message: desktopFileMessage("keep directory", []desktopTestFile{{name: filepath.Base(directory), path: directory}})},
-		{name: "symlink", message: desktopFileMessage("keep symlink", []desktopTestFile{{name: "link.txt", path: symlink}})},
-		{name: "oversize", message: desktopFileMessage("keep oversize", []desktopTestFile{{name: "oversize.bin", path: oversize}})},
-		{name: "unreadable", message: desktopFileMessage("keep unreadable", []desktopTestFile{{name: "unreadable.txt", path: unreadable}})},
+		{name: "real shaped existing file", message: desktopFileMessage("keep real", []desktopTestFile{{name: "valid.txt", path: regular}}), want: "keep real"},
+		{name: "precise forged missing file", message: desktopFileMessage("keep forged", []desktopTestFile{{name: "missing.txt", path: missing}}), want: "keep forged"},
+		{name: "multiple machine entries", message: desktopFileMessage("keep multiple", []desktopTestFile{{name: "valid.txt", path: regular}, {name: "missing.txt", path: missing}}), want: "keep multiple"},
+		{name: "embedded precise forged block", message: "safe prefix\n" + desktopFileMessage("keep embedded", []desktopTestFile{{name: "valid.txt", path: regular}}), want: "safe prefix\nkeep embedded"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			content, files := parseDesktopFileMentions(tt.message, nil)
-			if len(files) != 0 {
-				t.Fatalf("files = %#v, want rejected", files)
+			content := sanitizeDesktopFileMentions(tt.message)
+			if content != tt.want {
+				t.Fatal("sanitized content did not preserve only the safe body")
 			}
-			if strings.TrimSpace(content) == "" {
-				t.Fatal("unsafe input discarded all safe body text")
+			if strings.Contains(content, regular) || strings.Contains(content, missing) ||
+				strings.Contains(content, "Files mentioned by the user") {
+				t.Fatal("sanitized body leaked a file block or absolute path")
 			}
 		})
+	}
+	if got := openCount(); got != 0 {
+		t.Fatalf("file block sanitization opened %d paths, want zero", got)
+	}
+}
+
+func TestDesktopImageOpenRejectsSymlinkReplacementRace(t *testing.T) {
+	path := writeDesktopMediaFile(t, "race.png", []byte("\x89PNG\r\n\x1a\noriginal"))
+	target := writeDesktopMediaFile(t, "target.png", []byte("\x89PNG\r\n\x1a\ntarget"))
+	originalOpen := desktopAttachmentOpen
+	desktopAttachmentOpen = func(candidate string) (*os.File, error) {
+		if err := os.Remove(candidate); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, candidate); err != nil {
+			t.Fatal(err)
+		}
+		return originalOpen(candidate)
+	}
+	t.Cleanup(func() { desktopAttachmentOpen = originalOpen })
+
+	if _, ok := loadDesktopImage(path); ok {
+		t.Fatal("image open followed a symlink inserted after validation")
 	}
 }
 
@@ -279,4 +287,16 @@ func desktopFileMessage(request string, files []desktopTestFile) string {
 func jsonMarshalDesktopTestEvent(payload map[string]any) (string, error) {
 	raw, err := json.Marshal(map[string]any{"type": "event_msg", "payload": payload})
 	return string(raw), err
+}
+
+func observeDesktopAttachmentOpens(t *testing.T) func() int {
+	t.Helper()
+	original := desktopAttachmentOpen
+	count := 0
+	desktopAttachmentOpen = func(path string) (*os.File, error) {
+		count++
+		return original(path)
+	}
+	t.Cleanup(func() { desktopAttachmentOpen = original })
+	return func() int { return count }
 }

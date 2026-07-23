@@ -137,8 +137,8 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 			}
 			event := &events[i]
 			content := strings.TrimSpace(event.Content)
-			imageCount, fileCount := len(event.Images), len(event.Files)
-			if content == "" && len(event.Images) == 0 && len(event.Files) == 0 {
+			imageCount := len(event.Images)
+			if content == "" && len(event.Images) == 0 {
 				e.desktopSyncPending[pendingKey] = events[i+1:]
 				continue
 			}
@@ -159,7 +159,6 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 
 			if !e.attachmentSendEnabled {
 				event.Images = nil
-				event.Files = nil
 			} else {
 				imageSender, imageSupported := platform.(ImageSender)
 				if !imageSupported {
@@ -186,32 +185,6 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 				if len(event.Images) > 0 {
 					break
 				}
-
-				fileSender, fileSupported := platform.(FileSender)
-				if !fileSupported {
-					event.Files = nil
-				}
-				for len(event.Files) > 0 {
-					if e.externalConversationRoutes(sessions.AgentSessionRoutes())[sessionID] != sessionKey {
-						delete(e.desktopSyncPending, pendingKey)
-						break eventLoop
-					}
-					if err := e.waitOutgoing(platform); err != nil {
-						slog.Warn("desktop live sync send failed", "role", event.Role, "stage", "file")
-						e.desktopSyncPending[pendingKey] = events[i:]
-						break
-					}
-					if err := fileSender.SendFile(e.ctx, replyCtx, event.Files[0]); err != nil {
-						slog.Warn("desktop live sync send failed", "role", event.Role, "stage", "file")
-						e.desktopSyncPending[pendingKey] = events[i:]
-						break
-					}
-					event.Files = event.Files[1:]
-					e.desktopSyncPending[pendingKey] = events[i:]
-				}
-				if len(event.Files) > 0 {
-					break
-				}
 			}
 
 			e.desktopSyncPending[pendingKey] = events[i+1:]
@@ -219,7 +192,6 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 				"role", event.Role,
 				"content_len", len(content),
 				"image_count", imageCount,
-				"file_count", fileCount,
 			)
 		}
 		if len(e.desktopSyncPending[pendingKey]) == 0 {

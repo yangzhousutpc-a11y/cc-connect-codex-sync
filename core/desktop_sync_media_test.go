@@ -13,9 +13,7 @@ type desktopMediaPlatform struct {
 	muMedia       sync.Mutex
 	sequence      []string
 	failImageAt   int
-	failFileAt    int
 	imageAttempts int
-	fileAttempts  int
 }
 
 func (p *desktopMediaPlatform) Send(ctx context.Context, replyCtx any, content string) error {
@@ -39,17 +37,6 @@ func (p *desktopMediaPlatform) SendImage(_ context.Context, _ any, image ImageAt
 	return nil
 }
 
-func (p *desktopMediaPlatform) SendFile(_ context.Context, _ any, file FileAttachment) error {
-	p.muMedia.Lock()
-	defer p.muMedia.Unlock()
-	p.fileAttempts++
-	p.sequence = append(p.sequence, "file:"+file.FileName)
-	if p.failFileAt == p.fileAttempts {
-		return errors.New("file failure")
-	}
-	return nil
-}
-
 type desktopTextOnlyPlatform struct{ desktopSyncPlatform }
 
 type desktopMediaRouteSwitchPlatform struct {
@@ -66,16 +53,13 @@ func (p *desktopMediaRouteSwitchPlatform) SendImage(ctx context.Context, replyCt
 	return nil
 }
 
-func TestDesktopLiveSyncSendsTextImagesAndFilesInOrder(t *testing.T) {
+func TestDesktopLiveSyncSendsTextAndImagesInOrder(t *testing.T) {
 	event := ExternalConversationEvent{
 		SessionID: "thread-media-order",
 		Role:      "user",
 		Content:   "body",
 		Images: []ImageAttachment{
 			{FileName: "one.png"}, {FileName: "two.png"},
-		},
-		Files: []FileAttachment{
-			{FileName: "one.txt"}, {FileName: "two.txt"},
 		},
 	}
 	agent, platform, engine := newDesktopMediaEngine(t, event)
@@ -84,7 +68,6 @@ func TestDesktopLiveSyncSendsTextImagesAndFilesInOrder(t *testing.T) {
 	want := []string{
 		"text:✣ Codex App · 你\nbody",
 		"image:one.png", "image:two.png",
-		"file:one.txt", "file:two.txt",
 	}
 	if got := desktopMediaSequence(platform); !reflect.DeepEqual(got, want) {
 		t.Fatalf("sequence = %#v, want %#v", got, want)
@@ -112,7 +95,6 @@ func TestDesktopLiveSyncRetriesOnlyUnacknowledgedMediaItems(t *testing.T) {
 		Images: []ImageAttachment{
 			{FileName: "one.png"}, {FileName: "two.png"}, {FileName: "three.png"},
 		},
-		Files: []FileAttachment{{FileName: "one.txt"}},
 	}
 	agent, platform, engine := newDesktopMediaEngine(t, event)
 	platform.failImageAt = 2
@@ -123,35 +105,12 @@ func TestDesktopLiveSyncRetriesOnlyUnacknowledgedMediaItems(t *testing.T) {
 		"text:✣ Codex App · 你\nbody",
 		"image:one.png", "image:two.png",
 		"image:two.png", "image:three.png",
-		"file:one.txt",
 	}
 	if got := desktopMediaSequence(platform); !reflect.DeepEqual(got, want) {
 		t.Fatalf("sequence = %#v, want %#v", got, want)
 	}
 	if got := agent.pollCalls; len(got) != 1 {
 		t.Fatalf("poll calls = %#v, want one poll while partial event is pending", got)
-	}
-}
-
-func TestDesktopLiveSyncRetriesOnlyUnacknowledgedFiles(t *testing.T) {
-	event := ExternalConversationEvent{
-		SessionID: "thread-file-retry",
-		Role:      "user",
-		Files: []FileAttachment{
-			{FileName: "one.txt"}, {FileName: "two.txt"}, {FileName: "three.txt"},
-		},
-	}
-	agent, platform, engine := newDesktopMediaEngine(t, event)
-	platform.failFileAt = 2
-	engine.pollDesktopLiveSync(context.Background(), agent)
-	engine.pollDesktopLiveSync(context.Background(), agent)
-
-	want := []string{
-		"file:one.txt", "file:two.txt",
-		"file:two.txt", "file:three.txt",
-	}
-	if got := desktopMediaSequence(platform); !reflect.DeepEqual(got, want) {
-		t.Fatalf("sequence = %#v, want %#v", got, want)
 	}
 }
 
@@ -167,7 +126,6 @@ func TestDesktopLiveSyncStopsMediaWhenRouteChangesMidEvent(t *testing.T) {
 			Images: []ImageAttachment{
 				{FileName: "one.png"}, {FileName: "two.png"},
 			},
-			Files: []FileAttachment{{FileName: "must-not-send.txt"}},
 		}},
 	}}}
 	platform := &desktopMediaRouteSwitchPlatform{
@@ -196,7 +154,6 @@ func TestDesktopLiveSyncSkipsMediaWhenAttachmentSendDisabled(t *testing.T) {
 		Role:      "user",
 		Content:   "body",
 		Images:    []ImageAttachment{{FileName: "one.png"}},
-		Files:     []FileAttachment{{FileName: "one.txt"}},
 	}
 	agent, platform, engine := newDesktopMediaEngine(t, event)
 	engine.SetAttachmentSendEnabled(false)
@@ -213,7 +170,6 @@ func TestDesktopLiveSyncSkipsUnsupportedMediaWithoutRepeatingText(t *testing.T) 
 			Role:      "user",
 			Content:   "body",
 			Images:    []ImageAttachment{{FileName: "one.png"}},
-			Files:     []FileAttachment{{FileName: "one.txt"}},
 		}},
 	}}}
 	platform := &desktopTextOnlyPlatform{desktopSyncPlatform: desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}}
