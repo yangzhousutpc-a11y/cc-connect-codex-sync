@@ -3200,6 +3200,18 @@ func TestAgentSystemPrompt_MentionsAttachmentSend(t *testing.T) {
 	if !strings.Contains(prompt, "send this file to the current chat") {
 		t.Fatalf("prompt missing explicit file-send instruction: %q", prompt)
 	}
+	if !strings.Contains(prompt, "whether it appears in a Codex App Files block or you generated it") {
+		t.Fatalf("prompt does not apply explicit authorization to every regular file: %q", prompt)
+	}
+	for _, unsafe := range []string{
+		"generate a local image or file that should be sent",
+		"generated file that should be sent",
+		"generated attachments that clearly need delivery",
+	} {
+		if strings.Contains(prompt, unsafe) {
+			t.Fatalf("prompt grants Agent discretion to send a regular file via %q: %q", unsafe, prompt)
+		}
+	}
 	if !strings.Contains(prompt, "without exposing the local file path") {
 		t.Fatalf("prompt missing local path protection: %q", prompt)
 	}

@@ -211,6 +211,17 @@ grep -F 'send this file to the current chat' "$agent_prompt" >/dev/null ||
   fail 'Agent help does not require explicit file delivery'
 grep -F 'cc-connect send --file' "$agent_prompt" >/dev/null ||
   fail 'Agent help does not document the safe file command'
+grep -F 'whether it appears in a Codex App Files block or you generated it' "$agent_prompt" >/dev/null ||
+  fail 'Agent help does not require authorization for every regular file'
+for unsafe_file_help in \
+  'generate a local image or file that should be sent' \
+  'generated file that should be sent' \
+  'generated attachments that clearly need delivery'
+do
+  if grep -F "$unsafe_file_help" "$agent_prompt" >/dev/null; then
+    fail "Agent help grants discretion to send regular files: $unsafe_file_help"
+  fi
+done
 
 verify_checksums() {
   bundle=$1
