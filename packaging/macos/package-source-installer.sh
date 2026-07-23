@@ -85,7 +85,7 @@ install -m 644 "$repo_root/packaging/macos/README.zh-CN.md" "$bundle/README.md"
 install -m 644 "$repo_root/config.example.toml" "$bundle/config.example.toml"
 install -m 644 "$repo_root/packaging/macos/go-toolchains.txt" "$bundle/go-toolchains.txt"
 printf '%s\n' \
-  'version=v1.0.0' \
+  'version=v1.0.1' \
   "commit=$commit" \
   'go_version=go1.26.5' \
   "source_date_epoch=$source_epoch" \

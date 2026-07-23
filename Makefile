@@ -1,7 +1,7 @@
 APP        := cc-connect
 CMD        := ./cmd/cc-connect
 DIST       := dist
-VERSION    ?= v1.0.0
+VERSION    ?= v1.0.1
 COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 BUILD_TIME := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 GO         ?= go

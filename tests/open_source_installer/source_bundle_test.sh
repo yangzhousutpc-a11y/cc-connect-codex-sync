@@ -41,7 +41,7 @@ done
 [ "$(find "$first/source/platform" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 2 ] || fail 'bundle contains extra platforms'
 
 grep -F 'module github.com/yangzhousutpc-a11y/cc-connect-codex-sync' "$first/source/go.mod" >/dev/null || fail 'wrong module path'
-grep -F 'version=v1.0.0' "$first/VERSION" >/dev/null || fail 'wrong release version'
+grep -F 'version=v1.0.1' "$first/VERSION" >/dev/null || fail 'wrong release version'
 grep -F './setup.sh' "$first/README.md" >/dev/null || fail 'bundle README does not use guided setup'
 grep -F './setup.sh' "$first/source/AGENT_INSTALL.md" >/dev/null || fail 'Agent install does not delegate to guided setup'
 grep -F '## 高级手动安装' "$first/source/README.zh-CN.md" >/dev/null || fail 'Chinese README does not separate advanced manual installation'
