@@ -223,6 +223,50 @@ func (e *Engine) externalConversationRoutes(routes map[string]string) map[string
 	return eligible
 }
 
+func (e *Engine) activeRoutesForAgentThread(agentThreadID string) []string {
+	if !ValidAgentThreadID(agentThreadID) {
+		return nil
+	}
+
+	matches := e.sessions.ActiveRoutesForAgentSessionID(agentThreadID)
+	if e.workspacePool == nil {
+		return matches
+	}
+
+	e.desktopSyncRestoreOnce.Do(e.restoreDesktopLiveSyncWorkspaces)
+	for _, workspace := range e.workspacePool.All() {
+		workspace.mu.Lock()
+		sessions := workspace.sessions
+		workspace.mu.Unlock()
+		if sessions != nil {
+			matches = append(matches, sessions.ActiveRoutesForAgentSessionID(agentThreadID)...)
+		}
+	}
+	return matches
+}
+
+// ValidAgentThreadID accepts only the UUID-shaped identifier injected by the
+// Codex desktop execution environment.
+func ValidAgentThreadID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 36 {
+		return false
+	}
+	for i := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if value[i] != '-' {
+				return false
+			}
+			continue
+		}
+		c := value[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
 func (e *Engine) lookupPlatform(platformName string) Platform {
 	for _, platform := range e.platforms {
 		if strings.EqualFold(platform.Name(), platformName) {

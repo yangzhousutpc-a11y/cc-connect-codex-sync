@@ -860,6 +860,34 @@ func (sm *SessionManager) AgentSessionRoutes() map[string]string {
 	return routes
 }
 
+// ActiveRoutesForAgentSessionID returns every active messaging-platform route
+// currently bound to agentSessionID. Inactive and historical IDs are excluded.
+func (sm *SessionManager) ActiveRoutesForAgentSessionID(agentSessionID string) []string {
+	agentSessionID = strings.TrimSpace(agentSessionID)
+	if agentSessionID == "" || agentSessionID == ContinueSession {
+		return nil
+	}
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	routes := make([]string, 0, 1)
+	for userKey, localID := range sm.activeSession {
+		s := sm.sessions[localID]
+		if s == nil {
+			continue
+		}
+		s.mu.Lock()
+		matches := s.AgentSessionID == agentSessionID
+		s.mu.Unlock()
+		if matches {
+			routes = append(routes, userKey)
+		}
+	}
+	sort.Strings(routes)
+	return routes
+}
+
 // FindByID looks up a session by its internal ID across all users.
 func (sm *SessionManager) FindByID(id string) *Session {
 	sm.mu.RLock()

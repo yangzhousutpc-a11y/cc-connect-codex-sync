@@ -48,18 +48,19 @@ type APIServer struct {
 // the dispatch layer in engine.go. See cc-connect internal task
 // t-20260615-cqjbk1.
 type SendRequest struct {
-	Project    string            `json:"project"`
-	SessionKey string            `json:"session_key"`
-	Message    string            `json:"message"`
-	WorkDir    string            `json:"work_dir,omitempty"`
-	CWD        string            `json:"cwd,omitempty"`
-	TTSText    string            `json:"tts_text,omitempty"`
-	Images     []ImageAttachment `json:"images,omitempty"`
-	Files      []FileAttachment  `json:"files,omitempty"`
-	Audios     []FileAttachment  `json:"audios,omitempty"`
-	Videos     []FileAttachment  `json:"videos,omitempty"`
-	AtUsers    []string          `json:"at_users,omitempty"`
-	AtAll      bool              `json:"at_all,omitempty"`
+	Project       string            `json:"project"`
+	SessionKey    string            `json:"session_key"`
+	AgentThreadID string            `json:"agent_thread_id,omitempty"`
+	Message       string            `json:"message"`
+	WorkDir       string            `json:"work_dir,omitempty"`
+	CWD           string            `json:"cwd,omitempty"`
+	TTSText       string            `json:"tts_text,omitempty"`
+	Images        []ImageAttachment `json:"images,omitempty"`
+	Files         []FileAttachment  `json:"files,omitempty"`
+	Audios        []FileAttachment  `json:"audios,omitempty"`
+	Videos        []FileAttachment  `json:"videos,omitempty"`
+	AtUsers       []string          `json:"at_users,omitempty"`
+	AtAll         bool              `json:"at_all,omitempty"`
 }
 
 // NewAPIServer creates an API server on a Unix socket.
@@ -225,8 +226,19 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	var engine *Engine
 	var ok bool
+	threadFallback := req.SessionKey == "" && req.AgentThreadID != ""
 	if req.Project != "" {
 		engine, ok = s.engines[req.Project]
+	} else if threadFallback {
+		matchCount := 0
+		for _, candidate := range s.engines {
+			for _, sessionKey := range candidate.activeRoutesForAgentThread(req.AgentThreadID) {
+				matchCount++
+				engine = candidate
+				req.SessionKey = sessionKey
+			}
+		}
+		ok = matchCount == 1
 	} else if len(s.engines) == 1 {
 		// No project specified and only one engine: use it by default.
 		// Do NOT silently fall back when a non-empty project name is unknown —
@@ -240,12 +252,31 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if !ok {
+		if req.Project == "" && threadFallback {
+			http.Error(w, "Codex desktop route is unavailable", http.StatusConflict)
+			return
+		}
 		if req.Project == "" {
 			http.Error(w, "project is required (multiple projects configured)", http.StatusBadRequest)
 			return
 		}
 		http.Error(w, fmt.Sprintf("project %q not found", req.Project), http.StatusNotFound)
 		return
+	}
+	if req.Project != "" && threadFallback {
+		matches := engine.activeRoutesForAgentThread(req.AgentThreadID)
+		if len(matches) != 1 {
+			http.Error(w, "Codex desktop route is unavailable", http.StatusConflict)
+			return
+		}
+		req.SessionKey = matches[0]
+	}
+	writeSendError := func(err error) {
+		message := err.Error()
+		if threadFallback {
+			message = "Codex desktop send failed"
+		}
+		http.Error(w, message, http.StatusInternalServerError)
 	}
 
 	workDir := req.WorkDir
@@ -254,28 +285,28 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Message != "" || len(req.Images) > 0 || len(req.Files) > 0 {
 		if err := engine.SendToSessionWithOptions(req.SessionKey, req.Message, req.Images, req.Files, SendOptions{WorkDir: workDir, AtUsers: req.AtUsers, AtAll: req.AtAll}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeSendError(err)
 			return
 		}
 	}
 
 	if len(req.Audios) > 0 {
 		if err := engine.SendAudiosToSession(req.SessionKey, req.Audios); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeSendError(err)
 			return
 		}
 	}
 
 	if len(req.Videos) > 0 {
 		if err := engine.SendVideosToSession(req.SessionKey, req.Videos); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeSendError(err)
 			return
 		}
 	}
 
 	if strings.TrimSpace(req.TTSText) != "" {
 		if err := engine.SendTTSToSession(req.SessionKey, req.TTSText); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeSendError(err)
 			return
 		}
 	}

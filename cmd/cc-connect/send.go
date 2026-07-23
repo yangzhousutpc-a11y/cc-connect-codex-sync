@@ -175,6 +175,12 @@ func parseSendArgs(args []string) (core.SendRequest, string, error) {
 	if req.SessionKey == "" {
 		req.SessionKey = strings.TrimSpace(os.Getenv("CC_SESSION_KEY"))
 	}
+	if req.SessionKey == "" {
+		threadID := strings.TrimSpace(os.Getenv("CODEX_THREAD_ID"))
+		if core.ValidAgentThreadID(threadID) {
+			req.AgentThreadID = threadID
+		}
+	}
 	if req.Message == "" {
 		req.Message = strings.Join(positional, " ")
 	}

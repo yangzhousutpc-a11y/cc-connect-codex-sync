@@ -58,6 +58,7 @@ func TestParseSendArgs_RequiresMessageOrAttachment(t *testing.T) {
 func TestParseSendArgs_UsesSessionEnvFallback(t *testing.T) {
 	t.Setenv("CC_PROJECT", "demo")
 	t.Setenv("CC_SESSION_KEY", "telegram:123:456")
+	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
 
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "chart.png")
@@ -74,6 +75,55 @@ func TestParseSendArgs_UsesSessionEnvFallback(t *testing.T) {
 	}
 	if req.SessionKey != "telegram:123:456" {
 		t.Fatalf("session = %q, want telegram:123:456", req.SessionKey)
+	}
+	if req.AgentThreadID != "" {
+		t.Fatalf("agent thread ID = %q, want empty when CC_SESSION_KEY is set", req.AgentThreadID)
+	}
+}
+
+func TestParseSendArgs_UsesCodexThreadFallbackWithoutSession(t *testing.T) {
+	t.Setenv("CC_PROJECT", "")
+	t.Setenv("CC_SESSION_KEY", "")
+	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
+
+	req, _, err := parseSendArgs([]string{"--message", "hello"})
+	if err != nil {
+		t.Fatalf("parseSendArgs returned error: %v", err)
+	}
+	if req.SessionKey != "" {
+		t.Fatalf("session = %q, want empty", req.SessionKey)
+	}
+	if req.AgentThreadID != "00000000-0000-7000-8000-000000000001" {
+		t.Fatalf("agent thread ID = %q, want Codex thread fallback", req.AgentThreadID)
+	}
+}
+
+func TestParseSendArgs_ExplicitSessionBeatsCodexThreadFallback(t *testing.T) {
+	t.Setenv("CC_SESSION_KEY", "feishu:env-session")
+	t.Setenv("CODEX_THREAD_ID", "00000000-0000-7000-8000-000000000001")
+
+	req, _, err := parseSendArgs([]string{"--session", "wecom:explicit-session", "--message", "hello"})
+	if err != nil {
+		t.Fatalf("parseSendArgs returned error: %v", err)
+	}
+	if req.SessionKey != "wecom:explicit-session" {
+		t.Fatalf("session = %q, want explicit session", req.SessionKey)
+	}
+	if req.AgentThreadID != "" {
+		t.Fatalf("agent thread ID = %q, want empty when --session is set", req.AgentThreadID)
+	}
+}
+
+func TestParseSendArgs_IgnoresInvalidCodexThreadFallback(t *testing.T) {
+	t.Setenv("CC_SESSION_KEY", "")
+	t.Setenv("CODEX_THREAD_ID", "not-a-trusted-thread-id")
+
+	req, _, err := parseSendArgs([]string{"--message", "hello"})
+	if err != nil {
+		t.Fatalf("parseSendArgs returned error: %v", err)
+	}
+	if req.AgentThreadID != "" {
+		t.Fatalf("agent thread ID = %q, want invalid fallback ignored", req.AgentThreadID)
 	}
 }
 
