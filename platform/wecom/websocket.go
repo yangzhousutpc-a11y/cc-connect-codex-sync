@@ -24,6 +24,8 @@ const (
 
 	chatTypeSingle = 1
 	chatTypeGroup  = 2
+
+	wecomInvalidSecretErrCode = 40001
 )
 
 var errAckTimeout = errors.New("wecom: ACK timeout")
@@ -60,9 +62,11 @@ type Platform struct {
 	handler          core.MessageHandler
 	lifecycleHandler core.PlatformLifecycleHandler
 
-	reqSeq     atomic.Uint64
-	dedup      core.MessageDedup
-	missedPong atomic.Int32
+	reqSeq           atomic.Uint64
+	dedup            core.MessageDedup
+	missedPong       atomic.Int32
+	healthyPongs     atomic.Int32
+	connectionStable atomic.Bool
 
 	pendingMu   sync.Mutex
 	pendingAcks map[string]chan ackResult
@@ -183,6 +187,24 @@ func (p *Platform) SetLifecycleHandler(handler core.PlatformLifecycleHandler) {
 	p.startMu.Unlock()
 }
 
+func (p *Platform) lifecycleHandlerSnapshot() core.PlatformLifecycleHandler {
+	p.startMu.Lock()
+	defer p.startMu.Unlock()
+	return p.lifecycleHandler
+}
+
+func (p *Platform) notifyReady() {
+	if handler := p.lifecycleHandlerSnapshot(); handler != nil {
+		handler.OnPlatformReady(p)
+	}
+}
+
+func (p *Platform) notifyUnavailable(err error) {
+	if handler := p.lifecycleHandlerSnapshot(); handler != nil {
+		handler.OnPlatformUnavailable(p, err)
+	}
+}
+
 func (p *Platform) Start(handler core.MessageHandler) error {
 	if handler == nil {
 		return errors.New("wecom: message handler is required")
@@ -210,9 +232,10 @@ func (p *Platform) connectLoop() {
 		if p.ctx.Err() != nil {
 			return
 		}
-		if p.lifecycleHandler != nil {
-			p.lifecycleHandler.OnPlatformUnavailable(p, err)
+		if p.connectionStable.Swap(false) {
+			backoff = time.Second
 		}
+		p.notifyUnavailable(err)
 		var credentials *credentialError
 		if errors.As(err, &credentials) {
 			return
@@ -264,15 +287,19 @@ func (p *Platform) runConnection() error {
 		return errors.New("wecom: subscribe response omitted errcode")
 	}
 	if *response.ErrCode != 0 {
-		return &credentialError{err: fmt.Errorf(
+		err := fmt.Errorf(
 			"wecom: subscribe failed: errcode=%d errmsg=%s", *response.ErrCode, response.ErrMsg,
-		)}
+		)
+		if isPermanentCredentialError(*response.ErrCode) {
+			return &credentialError{err: err}
+		}
+		return err
 	}
 
-	if p.lifecycleHandler != nil {
-		p.lifecycleHandler.OnPlatformReady(p)
-	}
 	p.missedPong.Store(0)
+	p.healthyPongs.Store(0)
+	p.connectionStable.Store(false)
+	p.notifyReady()
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(p.ctx)
 	defer cancelHeartbeat()
 	go p.heartbeat(heartbeatCtx, conn)
@@ -320,7 +347,12 @@ func (p *Platform) handleFrame(frame wsFrame) {
 	}
 	reqID := frame.Headers.ReqID
 	if strings.HasPrefix(reqID, "ping_") {
-		p.missedPong.Store(0)
+		if frame.ErrCode != nil && *frame.ErrCode == 0 {
+			p.missedPong.Store(0)
+			if p.healthyPongs.Add(1) >= 2 {
+				p.connectionStable.Store(true)
+			}
+		}
 		return
 	}
 	if strings.HasPrefix(reqID, "aibot_subscribe_") {
@@ -333,6 +365,14 @@ func (p *Platform) handleFrame(frame wsFrame) {
 		err = fmt.Errorf("wecom: ACK failed: errcode=%d errmsg=%s", *frame.ErrCode, frame.ErrMsg)
 	}
 	p.dispatchAck(reqID, ackResult{frame: frame, err: err})
+}
+
+// The WeCom global error-code reference explicitly defines 40001 as an
+// invalid secret parameter. The long-connection protocol does not publish a
+// broader permanent-error list, so all other subscription errors remain
+// recoverable.
+func isPermanentCredentialError(errCode int) bool {
+	return errCode == wecomInvalidSecretErrCode
 }
 
 func (p *Platform) handleMsgCallback(frame wsFrame) {

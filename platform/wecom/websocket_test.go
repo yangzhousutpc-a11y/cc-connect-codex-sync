@@ -286,6 +286,39 @@ func (l *lifecycleRecorder) OnPlatformUnavailable(_ core.Platform, err error) {
 	l.unavailable <- err
 }
 
+type countingLifecycle struct {
+	ready       atomic.Int32
+	unavailable atomic.Int32
+}
+
+func (l *countingLifecycle) OnPlatformReady(core.Platform) { l.ready.Add(1) }
+func (l *countingLifecycle) OnPlatformUnavailable(core.Platform, error) {
+	l.unavailable.Add(1)
+}
+
+func TestLifecycleHandlerSnapshotIsConcurrentSafe(t *testing.T) {
+	p := &Platform{}
+	first := &countingLifecycle{}
+	second := &countingLifecycle{}
+	p.SetLifecycleHandler(first)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 1000 {
+			p.SetLifecycleHandler(first)
+			p.SetLifecycleHandler(second)
+		}
+	}()
+	for range 1000 {
+		p.notifyReady()
+		p.notifyUnavailable(errors.New("temporary"))
+	}
+	<-done
+	if first.ready.Load()+second.ready.Load() == 0 {
+		t.Fatal("no ready callback observed")
+	}
+}
+
 func TestSubscribeLifecycleHeartbeatAndStopIdempotent(t *testing.T) {
 	pingSeen := make(chan struct{}, 1)
 	server := newWSServer(t, func(conn *websocket.Conn, attempt int) {
@@ -327,7 +360,7 @@ func TestSubscribeLifecycleHeartbeatAndStopIdempotent(t *testing.T) {
 	waitClosed(t, p.done, "connect loop stop")
 }
 
-func TestAuthenticationFailureDoesNotRetry(t *testing.T) {
+func TestInvalidSecretSubscriptionFailureDoesNotRetry(t *testing.T) {
 	server := newWSServer(t, func(conn *websocket.Conn, attempt int) {
 		expectSubscribeAndAck(t, conn, 40001)
 	})
@@ -357,6 +390,34 @@ func TestAuthenticationFailureDoesNotRetry(t *testing.T) {
 	case <-lifecycle.ready:
 		t.Fatal("ready reported for failed subscription")
 	default:
+	}
+}
+
+func TestTemporarySubscriptionFailureReconnects(t *testing.T) {
+	server := newWSServer(t, func(conn *websocket.Conn, attempt int) {
+		if attempt == 1 {
+			// 6000 is documented by WeCom as a transient data-version
+			// conflict for which callers should retry later.
+			expectSubscribeAndAck(t, conn, 6000)
+			return
+		}
+		expectSubscribeAndAck(t, conn, 0)
+		<-time.After(100 * time.Millisecond)
+	})
+	defer server.Close()
+
+	p := mustPlatform(t)
+	p.endpoint = wsURL(server.URL)
+	p.backoffWait = noWaitBackoff
+	lifecycle := newLifecycleRecorder()
+	p.SetLifecycleHandler(lifecycle)
+	if err := p.Start(func(core.Platform, *core.Message) {}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Stop() })
+	waitClosed(t, lifecycle.ready, "ready after temporary subscribe failure")
+	if got := server.attempts.Load(); got != 2 {
+		t.Fatalf("dial attempts = %d, want 2", got)
 	}
 }
 
@@ -445,6 +506,58 @@ func TestNetworkFailureReconnectsWithExponentialBackoff(t *testing.T) {
 		t.Fatalf("backoff sequence = %v, want %v", got, want)
 	}
 	_ = p.Stop()
+}
+
+func TestBackoffResetsAfterStableHeartbeatRecovery(t *testing.T) {
+	fourthAttempt := make(chan struct{})
+	server := newWSServer(t, func(conn *websocket.Conn, attempt int) {
+		switch attempt {
+		case 1, 2:
+			expectSubscribeAndAck(t, conn, 6000)
+		case 3:
+			expectSubscribeAndAck(t, conn, 0)
+			acked := 0
+			for acked < 2 {
+				var frame wsFrame
+				if err := conn.ReadJSON(&frame); err != nil {
+					return
+				}
+				if frame.Cmd != "ping" {
+					continue
+				}
+				if err := conn.WriteJSON(wsFrame{Headers: frame.Headers, ErrCode: intPtr(0)}); err != nil {
+					return
+				}
+				acked++
+			}
+			_ = conn.Close()
+		default:
+			close(fourthAttempt)
+			<-time.After(100 * time.Millisecond)
+		}
+	})
+	defer server.Close()
+
+	p := mustPlatform(t)
+	p.endpoint = wsURL(server.URL)
+	p.heartbeatInterval = 5 * time.Millisecond
+	delays := make(chan time.Duration, 4)
+	p.backoffWait = func(ctx context.Context, delay time.Duration) bool {
+		delays <- delay
+		return ctx.Err() == nil
+	}
+	p.SetLifecycleHandler(newLifecycleRecorder())
+	if err := p.Start(func(core.Platform, *core.Message) {}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Stop() })
+	waitClosed(t, fourthAttempt, "fourth connection attempt")
+
+	got := []time.Duration{<-delays, <-delays, <-delays}
+	want := []time.Duration{time.Second, 2 * time.Second, time.Second}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("backoff sequence = %v, want %v", got, want)
+	}
 }
 
 func TestHeartbeatMissingAcknowledgementsReconnects(t *testing.T) {
