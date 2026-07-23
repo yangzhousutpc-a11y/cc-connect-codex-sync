@@ -28,6 +28,8 @@
 
 BotID 与 Secret 只写入本机配置。不要把包含 Secret 的 `config.toml` 提交到 Git，也不要粘贴到 Issue、聊天记录或公开日志中。
 
+API 长连接模式不需要公网 URL、CorpID、AgentID、Token、EncodingAESKey 或 cloudflared。
+
 ## 创建会话
 
 1. 在企业微信中手动创建内部群。

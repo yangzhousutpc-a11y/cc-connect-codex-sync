@@ -25,7 +25,7 @@ Platforms: Feishu, personal Weixin, WeCom
 
 | 改造方向 | 本项目的实现 |
 | --- | --- |
-| Codex App 双向同步 | 平台消息进入 Codex App；Codex App 中的用户消息和 Codex 回复同步回原飞书群或微信会话。 |
+| Codex App 双向同步 | 平台消息进入 Codex App；Codex App 中的用户消息和 Codex 回复同步回原飞书群、个人微信会话或企业微信群。 |
 | 飞书一群一会话 | 每个飞书群稳定绑定一个 Codex 会话；并发群消息互不串线。 |
 | 飞书 `/new` | 在 A 群执行 `/new 名称`，只创建一个 B 群和一个新 Codex 会话；A 群仍保留原会话、历史和上下文。 |
 | 新会话即时可见 | 新群创建成功后立即让对应会话出现在 Codex App，无需先发送业务消息。 |
@@ -37,7 +37,7 @@ Platforms: Feishu, personal Weixin, WeCom
 | Codex 兼容哨兵 | 监测 Codex CLI/app-server 事件兼容性；`/doctor` 展示同步状态，无法安全识别来源时停止错误转发。 |
 | macOS 本地安装 | 源码、唯一运行程序、配置数据、安装材料和备份统一到 `~/cc-connect`；候选程序验证后再切换，失败可回滚。 |
 
-## 两种会话模型
+## 三种会话模型
 
 ### 飞书：一群一会话
 

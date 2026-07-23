@@ -48,6 +48,8 @@ grep -F './setup.sh' "$first/README.md" >/dev/null || fail 'bundle README does n
 grep -F './setup.sh' "$first/source/AGENT_INSTALL.md" >/dev/null || fail 'Agent install does not delegate to guided setup'
 grep -F '## 高级手动安装' "$first/source/README.zh-CN.md" >/dev/null || fail 'Chinese README does not separate advanced manual installation'
 grep -F '## Advanced manual installation' "$first/source/README.md" >/dev/null || fail 'English README does not separate advanced manual installation'
+grep -F '## 三种会话模型' "$first/source/README.zh-CN.md" >/dev/null || fail 'Chinese README does not document three conversation models'
+grep -F '## Three conversation models' "$first/source/README.md" >/dev/null || fail 'English README does not document three conversation models'
 
 wecom_doc=$first/source/docs/wecom.md
 for required_text in \
@@ -57,29 +59,33 @@ for required_text in \
   'bot_id' \
   'bot_secret' \
   '群内需要 @机器人' \
-  '/new 不会自动创建企业微信群'
+  '/new 不会自动创建企业微信群' \
+  '不需要公网 URL、CorpID、AgentID、Token、EncodingAESKey 或 cloudflared'
 do
   grep -F "$required_text" "$wecom_doc" >/dev/null ||
     fail "Enterprise WeChat guide is missing: $required_text"
 done
 
-for forbidden_text in \
-  '公网 URL' \
-  'CorpID' \
-  'AgentID' \
-  'Token' \
-  'EncodingAESKey' \
-  'cloudflared'
-do
-  if grep -F "$forbidden_text" "$wecom_doc" >/dev/null; then
-    fail "Enterprise WeChat guide incorrectly requires: $forbidden_text"
-  fi
-done
+if grep -E '(^|[[:space:]：:，,；;。])(需要|必须配置|必须提供)[[:space:]]*(公网 URL|CorpID|AgentID|Token|EncodingAESKey|cloudflared)' "$wecom_doc" >/dev/null ||
+   grep -Ei '(^|[[:space:][:punct:]])requires?[[:space:]]+(a[[:space:]]+)?(public URL|CorpID|AgentID|Token|EncodingAESKey|cloudflared)' "$wecom_doc" >/dev/null; then
+  fail 'Enterprise WeChat guide incorrectly requires unrelated connection fields'
+fi
 
-grep -F 'type = "wecom"' "$first/source/config.example.toml" >/dev/null ||
-  fail 'config example does not mention Enterprise WeChat'
-grep -F '# type = "wecom"' "$first/source/config.example.toml" >/dev/null ||
-  fail 'Enterprise WeChat example must stay commented out'
+wecom_example=$first/source/config.example.toml
+if grep -E '^[[:space:]]*type[[:space:]]*=[[:space:]]*"wecom"' "$wecom_example" >/dev/null; then
+  fail 'Enterprise WeChat example must not be enabled'
+fi
+for commented_line in \
+  '# [[projects.platforms]]' \
+  '# type = "wecom"' \
+  '# [projects.platforms.options]' \
+  '# mode = "websocket"' \
+  '# bot_id = "your-wecom-bot-id"' \
+  '# bot_secret = "your-wecom-bot-secret"'
+do
+  grep -F "$commented_line" "$wecom_example" >/dev/null ||
+    fail "Enterprise WeChat example line must stay commented: $commented_line"
+done
 
 for public_entry in \
   source/README.md \

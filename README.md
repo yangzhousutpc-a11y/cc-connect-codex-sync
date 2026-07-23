@@ -25,7 +25,7 @@ CC Connect already provides the foundation for invoking an agent from a messagin
 
 | Area | This project's implementation |
 | --- | --- |
-| Codex App bidirectional sync | Platform messages appear in Codex App; Codex App user messages and Codex replies return to the originating Feishu group or Weixin chat. |
+| Codex App bidirectional sync | Platform messages appear in Codex App; Codex App user messages and Codex replies return to the originating Feishu group, personal Weixin chat, or WeCom group. |
 | One Feishu group, one conversation | Every Feishu group keeps a stable Codex binding, including under concurrent group traffic. |
 | Feishu `/new` | Running `/new name` in group A creates exactly one group B and one new Codex conversation; group A keeps its original conversation, history, and context. |
 | Immediate conversation visibility | A newly created group is materialized in Codex App immediately, without waiting for the first business message. |
@@ -37,7 +37,7 @@ CC Connect already provides the foundation for invoking an agent from a messagin
 | Codex compatibility sentinel | Codex CLI/app-server event compatibility is monitored; `/doctor` reports sync health, and unsafe source identification fails closed. |
 | Local macOS installation | Source, the single runtime, data, installer materials, and backups live under `~/cc-connect`; verified candidates are activated transactionally with rollback on failure. |
 
-## Two conversation models
+## Three conversation models
 
 ### Feishu: one group, one conversation
 
