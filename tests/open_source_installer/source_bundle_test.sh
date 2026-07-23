@@ -62,6 +62,43 @@ verify_checksums "$first"
 verify_checksums "$second"
 "$repo_root/packaging/macos/scan-public-bundle.sh" "$first"
 
+assert_scan_rejects() {
+  name=$1
+  content=$2
+  fixture=$test_root/privacy-reject-$name
+  mkdir "$fixture"
+  printf '%s\n' "$content" >"$fixture/config.example.toml"
+  if "$repo_root/packaging/macos/scan-public-bundle.sh" "$fixture" >/dev/null 2>&1; then
+    fail "privacy scan accepted $name"
+  fi
+}
+
+assert_scan_accepts() {
+  name=$1
+  content=$2
+  fixture=$test_root/privacy-accept-$name
+  mkdir "$fixture"
+  printf '%s\n' "$content" >"$fixture/config.example.toml"
+  "$repo_root/packaging/macos/scan-public-bundle.sh" "$fixture" >/dev/null ||
+    fail "privacy scan rejected placeholder $name"
+}
+
+assert_scan_rejects secret-plain-double 'bot_secret = "real-secret-value"'
+assert_scan_rejects secret-plain-single "bot_secret = 'real-secret-value'"
+assert_scan_rejects secret-inline-double 'options = { mode = "websocket", bot_secret = "real-secret-value" }'
+assert_scan_rejects secret-inline-single "options = { mode = 'websocket', bot_secret = 'real-secret-value' }"
+assert_scan_rejects bot-id-plain-double 'bot_id = "aib0123456789ABCDEF"'
+assert_scan_rejects bot-id-plain-single "bot_id = 'aib0123456789ABCDEF'"
+assert_scan_rejects bot-id-inline-double 'options = { bot_id = "aib0123456789ABCDEF", mode = "websocket" }'
+assert_scan_rejects bot-id-inline-single "options = { bot_id = 'aib0123456789ABCDEF', mode = 'websocket' }"
+
+assert_scan_accepts secret-placeholder-double 'bot_secret = "your-wecom-bot-secret"'
+assert_scan_accepts secret-placeholder-single "bot_secret = '\${WECOM_BOT_SECRET}'"
+assert_scan_accepts secret-placeholder-inline 'options = { bot_secret = "your-wecom-bot-secret" }'
+assert_scan_accepts bot-id-placeholder-double 'bot_id = "your-wecom-bot-id"'
+assert_scan_accepts bot-id-placeholder-single "bot_id = '\${WECOM_BOT_ID}'"
+assert_scan_accepts bot-id-placeholder-inline 'options = { bot_id = "your-wecom-bot-id" }'
+
 (cd "$first" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) >"$test_root/first.hashes"
 (cd "$second" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) >"$test_root/second.hashes"
 cmp -s "$test_root/first.hashes" "$test_root/second.hashes" || fail 'source bundle is not reproducible'
