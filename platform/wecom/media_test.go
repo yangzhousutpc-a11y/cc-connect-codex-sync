@@ -7,10 +7,12 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,6 +81,30 @@ func TestMediaRejectsRedirectFromHTTPSToHTTP(t *testing.T) {
 	}
 }
 
+func TestMediaRejectsChunkedPayloadAboveLimit(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unavailable", http.StatusInternalServerError)
+			return
+		}
+		chunk := bytes.Repeat([]byte{'x'}, 1<<20)
+		for range 20 {
+			_, _ = w.Write(chunk)
+			flusher.Flush()
+		}
+		_, _ = io.WriteString(w, "x")
+	}))
+	defer server.Close()
+
+	p := &Platform{httpClient: server.Client()}
+	if _, _, err := p.downloadAndDecrypt(context.Background(), wsMediaRef{
+		URL: server.URL, AESKey: validAESKeyForTest(),
+	}, 0); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("chunked oversize err = %v", err)
+	}
+}
+
 func TestMediaRejectsInvalidPKCS7Padding(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	block, err := aes.NewCipher(key)
@@ -92,6 +118,87 @@ func TestMediaRejectsInvalidPKCS7Padding(t *testing.T) {
 	if _, err := decryptWeComMedia(ciphertext, base64.StdEncoding.EncodeToString(key)); err == nil ||
 		!strings.Contains(err.Error(), "padding") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPureMediaTimeoutProducesNoticeAndReleasesInboundBarrier(t *testing.T) {
+	requestStarted := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-requestStarted:
+		default:
+			close(requestStarted)
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	p := newInboundTestPlatform()
+	p.httpClient = server.Client()
+	p.mediaDownloadTimeout = 20 * time.Millisecond
+	got := make(chan *core.Message, 2)
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got <- msg
+		close(msg.DispatchAdmission)
+	}
+	first := callbackBody("media-timeout", "group", "group-1", "u1", "image", "")
+	first.Image = &wsMediaBlock{URL: server.URL, AESKey: validAESKeyForTest()}
+	p.handleMsgCallback(callbackFrame(t, "req-media", first))
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("media request did not start")
+	}
+	p.handleMsgCallback(callbackFrame(t, "req-text", callbackBody(
+		"after-timeout", "group", "group-1", "u2", "text", "after",
+	)))
+
+	select {
+	case msg := <-got:
+		if msg.MessageID != "media-timeout" || msg.Content != mediaDownloadFailureNotice {
+			t.Fatalf("first message = %#v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pure media timeout did not produce a notice")
+	}
+	select {
+	case msg := <-got:
+		if msg.MessageID != "after-timeout" || msg.Content != "after" {
+			t.Fatalf("second message = %#v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("media timeout did not release same-session barrier")
+	}
+}
+
+func TestInboundMediaCumulativeBudgetSkipsLaterAttachmentAndKeepsText(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	encrypted := encryptMediaForTest(t, bytes.Repeat([]byte{'x'}, 17), key)
+	var hits atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Disposition", `attachment; filename="image.png"`)
+		_, _ = w.Write(encrypted)
+	}))
+	defer server.Close()
+
+	p := &Platform{httpClient: server.Client()}
+	message := &core.Message{}
+	keyText := base64.StdEncoding.EncodeToString(key)
+	body := wsMsgCallbackBody{AibotID: "bot"}
+	p.populateInboundMediaWithinBudget(context.Background(), &body, message, []inboundMediaPart{
+		{kind: "text", text: "keep this"},
+		{kind: "image", ref: wsMediaRef{URL: server.URL + "/first", AESKey: keyText}},
+		{kind: "file", ref: wsMediaRef{URL: server.URL + "/second", AESKey: keyText}},
+	}, int64(len(encrypted)))
+	if message.Content != "keep this" {
+		t.Fatalf("Content = %q", message.Content)
+	}
+	if len(message.Images) != 1 || len(message.Files) != 0 {
+		t.Fatalf("Images=%d Files=%d", len(message.Images), len(message.Files))
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("download requests = %d, want 1", got)
 	}
 }
 

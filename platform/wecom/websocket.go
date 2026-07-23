@@ -21,6 +21,7 @@ const (
 	defaultHeartbeat       = 30 * time.Second
 	maxReconnectBackoff    = 30 * time.Second
 	defaultAckTimeout      = 5 * time.Second
+	defaultMediaTimeout    = 90 * time.Second
 	defaultMaxMessageBytes = 2000
 
 	chatTypeSingle = 1
@@ -44,13 +45,14 @@ type Platform struct {
 	secret    string
 	allowFrom string
 
-	endpoint          string
-	dial              dialWebSocket
-	backoffWait       backoffWaiter
-	heartbeatInterval time.Duration
-	ackTimeout        time.Duration
-	maxMessageBytes   int
-	httpClient        *http.Client
+	endpoint             string
+	dial                 dialWebSocket
+	backoffWait          backoffWaiter
+	heartbeatInterval    time.Duration
+	ackTimeout           time.Duration
+	maxMessageBytes      int
+	httpClient           *http.Client
+	mediaDownloadTimeout time.Duration
 
 	startMu sync.Mutex
 	started bool
@@ -150,19 +152,20 @@ func New(opts map[string]any) (core.Platform, error) {
 	core.CheckAllowFrom("wecom", allowFrom)
 
 	return &Platform{
-		botID:             botID,
-		secret:            secret,
-		allowFrom:         allowFrom,
-		endpoint:          defaultEndpoint,
-		dial:              defaultDial,
-		backoffWait:       waitBackoff,
-		heartbeatInterval: defaultHeartbeat,
-		ackTimeout:        defaultAckTimeout,
-		maxMessageBytes:   defaultMaxMessageBytes,
-		httpClient:        http.DefaultClient,
-		done:              make(chan struct{}),
-		pendingAcks:       make(map[string]chan ackResult),
-		inboundAdmissions: make(map[string]inboundBarrier),
+		botID:                botID,
+		secret:               secret,
+		allowFrom:            allowFrom,
+		endpoint:             defaultEndpoint,
+		dial:                 defaultDial,
+		backoffWait:          waitBackoff,
+		heartbeatInterval:    defaultHeartbeat,
+		ackTimeout:           defaultAckTimeout,
+		maxMessageBytes:      defaultMaxMessageBytes,
+		httpClient:           http.DefaultClient,
+		mediaDownloadTimeout: defaultMediaTimeout,
+		done:                 make(chan struct{}),
+		pendingAcks:          make(map[string]chan ackResult),
+		inboundAdmissions:    make(map[string]inboundBarrier),
 	}, nil
 }
 

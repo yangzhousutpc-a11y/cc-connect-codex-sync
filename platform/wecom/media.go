@@ -26,6 +26,8 @@ const (
 	wecomMediaMaxBytes   = 20 << 20
 	wecomUploadChunkSize = 512 << 10
 	wecomUploadMaxChunks = 100
+
+	mediaDownloadFailureNotice = "图片或文件下载失败，请重新发送。"
 )
 
 type wsMediaRef struct {
@@ -126,7 +128,18 @@ func (p *Platform) populateInboundMedia(
 	message *core.Message,
 	parts []inboundMediaPart,
 ) {
+	p.populateInboundMediaWithinBudget(ctx, body, message, parts, wecomMediaMaxBytes)
+}
+
+func (p *Platform) populateInboundMediaWithinBudget(
+	ctx context.Context,
+	body *wsMsgCallbackBody,
+	message *core.Message,
+	parts []inboundMediaPart,
+	budget int64,
+) {
 	var texts []string
+	remaining := budget
 	for _, part := range parts {
 		switch part.kind {
 		case "text":
@@ -134,11 +147,15 @@ func (p *Platform) populateInboundMedia(
 				texts = append(texts, text)
 			}
 		case "image":
-			data, name, err := p.downloadAndDecrypt(ctx, part.ref, 0)
+			if remaining <= 0 {
+				continue
+			}
+			data, name, used, err := p.downloadAndDecryptWithinLimit(ctx, part.ref, 0, remaining)
 			if err != nil {
 				slog.Warn("wecom: image download failed", "error", err)
 				continue
 			}
+			remaining -= used
 			if name == "" {
 				name = "image.png"
 			}
@@ -152,11 +169,15 @@ func (p *Platform) populateInboundMedia(
 				FileName: filepath.Base(name),
 			})
 		case "file":
-			data, name, err := p.downloadAndDecrypt(ctx, part.ref, 0)
+			if remaining <= 0 {
+				continue
+			}
+			data, name, used, err := p.downloadAndDecryptWithinLimit(ctx, part.ref, 0, remaining)
 			if err != nil {
 				slog.Warn("wecom: file download failed", "error", err)
 				continue
 			}
+			remaining -= used
 			if name == "" {
 				name = "attachment"
 			}
@@ -168,6 +189,9 @@ func (p *Platform) populateInboundMedia(
 		}
 	}
 	message.Content = stripWeComAtMentions(strings.Join(texts, "\n"), p.botID, body.AibotID)
+	if message.Content == "" && len(message.Images) == 0 && len(message.Files) == 0 {
+		message.Content = mediaDownloadFailureNotice
+	}
 }
 
 func (p *Platform) downloadAndDecrypt(
@@ -175,19 +199,43 @@ func (p *Platform) downloadAndDecrypt(
 	ref wsMediaRef,
 	sizeHint int64,
 ) ([]byte, string, error) {
+	data, name, _, err := p.downloadAndDecryptWithinLimit(
+		ctx, ref, sizeHint, wecomMediaMaxBytes,
+	)
+	return data, name, err
+}
+
+func (p *Platform) downloadAndDecryptWithinLimit(
+	ctx context.Context,
+	ref wsMediaRef,
+	sizeHint int64,
+	maxBytes int64,
+) ([]byte, string, int64, error) {
+	if maxBytes <= 0 || maxBytes > wecomMediaMaxBytes {
+		maxBytes = wecomMediaMaxBytes
+	}
 	if sizeHint > wecomMediaMaxBytes {
-		return nil, "", fmt.Errorf("wecom: media too large: %d bytes", sizeHint)
+		return nil, "", 0, fmt.Errorf("wecom: media too large: %d bytes", sizeHint)
+	}
+	if sizeHint > maxBytes {
+		return nil, "", 0, fmt.Errorf("wecom: media exceeds remaining message budget: %d bytes", sizeHint)
 	}
 	parsed, err := url.Parse(ref.URL)
 	if err != nil {
-		return nil, "", fmt.Errorf("wecom: parse media URL: %w", err)
+		return nil, "", 0, fmt.Errorf("wecom: parse media URL: %w", err)
 	}
 	if parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, "", errors.New("wecom: media URL must use https")
+		return nil, "", 0, errors.New("wecom: media URL must use https")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	timeout := p.mediaDownloadTimeout
+	if timeout <= 0 {
+		timeout = defaultMediaTimeout
+	}
+	downloadCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return nil, "", fmt.Errorf("wecom: create media request: %w", err)
+		return nil, "", 0, fmt.Errorf("wecom: create media request: %w", err)
 	}
 	client := p.httpClient
 	if client == nil {
@@ -209,27 +257,28 @@ func (p *Platform) downloadAndDecrypt(
 	}
 	response, err := clientCopy.Do(request)
 	if err != nil {
-		return nil, "", fmt.Errorf("wecom: download media: %w", err)
+		return nil, "", 0, fmt.Errorf("wecom: download media: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, "", fmt.Errorf("wecom: download media: HTTP %s", response.Status)
+		return nil, "", 0, fmt.Errorf("wecom: download media: HTTP %s", response.Status)
 	}
-	if response.ContentLength > wecomMediaMaxBytes {
-		return nil, "", fmt.Errorf("wecom: media too large: %d bytes", response.ContentLength)
+	if response.ContentLength > maxBytes {
+		return nil, "", 0, fmt.Errorf("wecom: media too large: %d bytes", response.ContentLength)
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, wecomMediaMaxBytes+1))
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
 	if err != nil {
-		return nil, "", fmt.Errorf("wecom: read media: %w", err)
+		return nil, "", 0, fmt.Errorf("wecom: read media: %w", err)
 	}
-	if len(raw) > wecomMediaMaxBytes {
-		return nil, "", fmt.Errorf("wecom: media too large: more than %d bytes", wecomMediaMaxBytes)
+	if int64(len(raw)) > maxBytes {
+		return nil, "", 0, fmt.Errorf("wecom: media too large: more than %d bytes", maxBytes)
 	}
 	data, err := decryptWeComMedia(raw, ref.AESKey)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
-	return data, contentDispositionBaseName(response.Header.Get("Content-Disposition")), nil
+	return data, contentDispositionBaseName(response.Header.Get("Content-Disposition")),
+		int64(len(raw)), nil
 }
 
 func decryptWeComMedia(ciphertext []byte, encodedKey string) ([]byte, error) {
