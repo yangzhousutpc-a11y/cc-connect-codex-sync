@@ -67,9 +67,35 @@ do
 done
 
 wecom_guide_requires_unrelated_field() {
-  grep -Eiv '不需要|无需|does not require|do not require|not required' |
-    grep -Ei \
-      '(^|[[:space:]：:，,；;。])(需要([[:space:]]*配置)?|必须配置|必须提供)[[:space:]]*(公网 URL|CorpID|AgentID|Token|EncodingAESKey|cloudflared)|(^|[[:space:][:punct:]])requires?([[:space:]]+configuration)?([[:space:]]+of)?[[:space:]]+(a[[:space:]]+)?(public URL|CorpID|AgentID|Token|EncodingAESKey|cloudflared)'
+  awk '
+    BEGIN {
+      chinese[1] = "公网 URL"; english[1] = "public url"
+      chinese[2] = "CorpID"; english[2] = "corpid"
+      chinese[3] = "AgentID"; english[3] = "agentid"
+      chinese[4] = "Token"; english[4] = "token"
+      chinese[5] = "EncodingAESKey"; english[5] = "encodingaeskey"
+      chinese[6] = "cloudflared"; english[6] = "cloudflared"
+    }
+    {
+      for (i = 1; i <= 6; i++) {
+        chinese_text = $0
+        while (sub("不需要[[:space:]]*(配置[[:space:]]*)?" chinese[i], "", chinese_text)) {}
+        while (sub("无需[[:space:]]*(配置[[:space:]]*)?" chinese[i], "", chinese_text)) {}
+        if (chinese_text ~ ("需要[[:space:]]*(配置[[:space:]]*)?" chinese[i]) ||
+            chinese_text ~ ("必须[[:space:]]*(配置|提供)[[:space:]]*" chinese[i])) {
+          found = 1
+        }
+
+        english_text = tolower($0)
+        while (sub("does[[:space:]]+not[[:space:]]+require([[:space:]]+configuration)?([[:space:]]+of)?[[:space:]]+" english[i], "", english_text)) {}
+        while (sub("do[[:space:]]+not[[:space:]]+require([[:space:]]+configuration)?([[:space:]]+of)?[[:space:]]+" english[i], "", english_text)) {}
+        if (english_text ~ ("requires?([[:space:]]+configuration)?([[:space:]]+of)?[[:space:]]+" english[i])) {
+          found = 1
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  '
 }
 
 if wecom_guide_requires_unrelated_field <"$wecom_doc" >/dev/null; then
@@ -107,7 +133,12 @@ do
   assert_wecom_requirement_allowed "不需要 $chinese_field"
   assert_wecom_requirement_allowed "无需 $chinese_field"
   assert_wecom_requirement_allowed "does not require $english_field"
+  assert_wecom_requirement_allowed "does not require configuration of $english_field"
 done
+
+assert_wecom_requirement_rejected 'API长连接模式需要配置 CorpID。'
+assert_wecom_requirement_rejected '不需要 Token，但需要 CorpID。'
+assert_wecom_requirement_rejected 'does not require Token but requires CorpID'
 
 wecom_example=$first/source/config.example.toml
 if grep -E '^[[:space:]]*type[[:space:]]*=[[:space:]]*"wecom"' "$wecom_example" >/dev/null; then
