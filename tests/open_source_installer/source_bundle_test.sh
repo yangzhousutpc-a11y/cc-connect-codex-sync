@@ -66,10 +66,48 @@ do
     fail "Enterprise WeChat guide is missing: $required_text"
 done
 
-if grep -E '(^|[[:space:]：:，,；;。])(需要|必须配置|必须提供)[[:space:]]*(公网 URL|CorpID|AgentID|Token|EncodingAESKey|cloudflared)' "$wecom_doc" >/dev/null ||
-   grep -Ei '(^|[[:space:][:punct:]])requires?[[:space:]]+(a[[:space:]]+)?(public URL|CorpID|AgentID|Token|EncodingAESKey|cloudflared)' "$wecom_doc" >/dev/null; then
+wecom_guide_requires_unrelated_field() {
+  grep -Eiv '不需要|无需|does not require|do not require|not required' |
+    grep -Ei \
+      '(^|[[:space:]：:，,；;。])(需要([[:space:]]*配置)?|必须配置|必须提供)[[:space:]]*(公网 URL|CorpID|AgentID|Token|EncodingAESKey|cloudflared)|(^|[[:space:][:punct:]])requires?([[:space:]]+configuration)?([[:space:]]+of)?[[:space:]]+(a[[:space:]]+)?(public URL|CorpID|AgentID|Token|EncodingAESKey|cloudflared)'
+}
+
+if wecom_guide_requires_unrelated_field <"$wecom_doc" >/dev/null; then
   fail 'Enterprise WeChat guide incorrectly requires unrelated connection fields'
 fi
+
+assert_wecom_requirement_rejected() {
+  text=$1
+  if ! printf '%s\n' "$text" | wecom_guide_requires_unrelated_field >/dev/null; then
+    fail "Enterprise WeChat requirement policy accepted: $text"
+  fi
+}
+
+assert_wecom_requirement_allowed() {
+  text=$1
+  if printf '%s\n' "$text" | wecom_guide_requires_unrelated_field >/dev/null; then
+    fail "Enterprise WeChat requirement policy rejected: $text"
+  fi
+}
+
+for field_pair in \
+  '公网 URL|public URL' \
+  'CorpID|CorpID' \
+  'AgentID|AgentID' \
+  'Token|Token' \
+  'EncodingAESKey|EncodingAESKey' \
+  'cloudflared|cloudflared'
+do
+  chinese_field=${field_pair%%|*}
+  english_field=${field_pair#*|}
+  assert_wecom_requirement_rejected "需要配置 $chinese_field"
+  assert_wecom_requirement_rejected "需要 $chinese_field"
+  assert_wecom_requirement_rejected "requires configuration of $english_field"
+  assert_wecom_requirement_rejected "requires $english_field"
+  assert_wecom_requirement_allowed "不需要 $chinese_field"
+  assert_wecom_requirement_allowed "无需 $chinese_field"
+  assert_wecom_requirement_allowed "does not require $english_field"
+done
 
 wecom_example=$first/source/config.example.toml
 if grep -E '^[[:space:]]*type[[:space:]]*=[[:space:]]*"wecom"' "$wecom_example" >/dev/null; then
