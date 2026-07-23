@@ -123,6 +123,7 @@ type wsMsgCallbackBody struct {
 	Image      *wsMediaBlock `json:"image,omitempty"`
 	File       *wsMediaBlock `json:"file,omitempty"`
 	Mixed      *wsMixedBlock `json:"mixed,omitempty"`
+	Quote      *wsQuoteBlock `json:"quote,omitempty"`
 	CreateTime int64         `json:"create_time"`
 }
 
@@ -413,6 +414,9 @@ func (p *Platform) handleMsgCallback(frame wsFrame) {
 	switch body.MsgType {
 	case "text":
 		content = body.Text.Content
+		if body.Quote != nil && body.Quote.MsgType == "file" && body.Quote.File != nil {
+			mediaParts = collectInboundMediaParts(&body)
+		}
 	case "voice":
 		content = body.Voice.Content
 		if strings.TrimSpace(content) == "" {

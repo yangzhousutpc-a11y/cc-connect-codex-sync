@@ -121,6 +121,104 @@ func TestMediaRejectsInvalidPKCS7Padding(t *testing.T) {
 	}
 }
 
+func TestDecryptWeComMediaAcceptsOfficial32BytePadding(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	plain := []byte("1234567890123") // 13 bytes produces 19 bytes of official padding.
+	ciphertext := encryptMediaWithPaddingBlockForTest(t, plain, key, 32)
+	got, err := decryptWeComMedia(ciphertext, base64.StdEncoding.EncodeToString(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, plain) {
+		t.Fatalf("data = %q, want %q", got, plain)
+	}
+}
+
+func TestCollectInboundMediaPartsIncludesQuotedFileOnTextCallback(t *testing.T) {
+	raw := json.RawMessage(`{
+		"msgtype":"text",
+		"text":{"content":"@bot analyze"},
+		"quote":{
+			"msgtype":"file",
+			"file":{"url":"https://example.invalid/file","aeskey":"test-key"}
+		}
+	}`)
+	var body wsMsgCallbackBody
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	parts := collectInboundMediaParts(&body)
+	if len(parts) != 2 {
+		t.Fatalf("parts = %#v", parts)
+	}
+	if parts[0].kind != "text" || parts[0].text != "@bot analyze" {
+		t.Fatalf("first part = %#v", parts[0])
+	}
+	if parts[1].kind != "file" || parts[1].ref.URL != "https://example.invalid/file" ||
+		parts[1].ref.AESKey != "test-key" {
+		t.Fatalf("second part = %#v", parts[1])
+	}
+}
+
+func TestQuotedFileTextCallbackDispatchesAttachment(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	plain := []byte("1234567890123")
+	ciphertext := encryptMediaWithPaddingBlockForTest(t, plain, key, 32)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Disposition", `attachment; filename="../../report.txt"`)
+		_, _ = w.Write(ciphertext)
+	}))
+	defer server.Close()
+
+	body := map[string]any{
+		"msgid":       "quoted-file-1",
+		"aibotid":     "bot",
+		"chatid":      "group-1",
+		"chattype":    "group",
+		"from":        map[string]string{"userid": "user-1"},
+		"msgtype":     "text",
+		"text":        map[string]string{"content": "@bot analyze"},
+		"create_time": time.Now().Unix(),
+		"quote": map[string]any{
+			"msgtype": "file",
+			"file": map[string]string{
+				"url": server.URL, "aeskey": strings.TrimRight(
+					base64.StdEncoding.EncodeToString(key), "=",
+				),
+			},
+		},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newInboundTestPlatform()
+	p.httpClient = server.Client()
+	got := make(chan *core.Message, 1)
+	p.handler = func(_ core.Platform, message *core.Message) {
+		got <- message
+		close(message.DispatchAdmission)
+	}
+	p.handleMsgCallback(wsFrame{
+		Cmd: "aibot_msg_callback", Headers: wsFrameHeaders{ReqID: "request-1"}, Body: raw,
+	})
+	select {
+	case message := <-got:
+		if message.Content != "analyze" {
+			t.Fatalf("Content = %q", message.Content)
+		}
+		if len(message.Files) != 1 {
+			t.Fatalf("Files = %#v", message.Files)
+		}
+		if message.Files[0].FileName != "report.txt" ||
+			!bytes.Equal(message.Files[0].Data, plain) {
+			t.Fatalf("File = %#v", message.Files[0])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for quoted file callback")
+	}
+}
+
 func TestPureMediaTimeoutProducesNoticeAndReleasesInboundBarrier(t *testing.T) {
 	requestStarted := make(chan struct{})
 	server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -458,6 +556,24 @@ func encryptMediaForTest(t *testing.T, plain, key []byte) []byte {
 		t.Fatal(err)
 	}
 	pad := aes.BlockSize - len(plain)%aes.BlockSize
+	padded := append(append([]byte(nil), plain...), bytes.Repeat([]byte{byte(pad)}, pad)...)
+	out := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, key[:aes.BlockSize]).CryptBlocks(out, padded)
+	return out
+}
+
+func encryptMediaWithPaddingBlockForTest(
+	t *testing.T,
+	plain []byte,
+	key []byte,
+	paddingBlock int,
+) []byte {
+	t.Helper()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pad := paddingBlock - len(plain)%paddingBlock
 	padded := append(append([]byte(nil), plain...), bytes.Repeat([]byte{byte(pad)}, pad)...)
 	out := make([]byte, len(padded))
 	cipher.NewCBCEncrypter(block, key[:aes.BlockSize]).CryptBlocks(out, padded)

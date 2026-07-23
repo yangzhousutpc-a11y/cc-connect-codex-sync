@@ -26,6 +26,7 @@ const (
 	wecomMediaMaxBytes   = 20 << 20
 	wecomUploadChunkSize = 512 << 10
 	wecomUploadMaxChunks = 100
+	wecomPKCS7BlockSize  = 32
 
 	mediaDownloadFailureNotice = "图片或文件下载失败，请重新发送。"
 )
@@ -53,6 +54,11 @@ type wsMixedItem struct {
 
 type wsMixedBlock struct {
 	MsgItem []wsMixedItem `json:"msg_item"`
+}
+
+type wsQuoteBlock struct {
+	MsgType string        `json:"msgtype"`
+	File    *wsMediaBlock `json:"file,omitempty"`
 }
 
 type inboundMediaPart struct {
@@ -100,26 +106,36 @@ func collectInboundMediaParts(body *wsMsgCallbackBody) []inboundMediaPart {
 				})
 			}
 		}
-		return parts
+		return appendQuotedFilePart(parts, body.Quote)
 	}
 
+	var parts []inboundMediaPart
 	switch body.MsgType {
 	case "text":
-		return []inboundMediaPart{{kind: "text", text: body.Text.Content}}
+		parts = append(parts, inboundMediaPart{kind: "text", text: body.Text.Content})
 	case "image":
 		if body.Image != nil {
-			return []inboundMediaPart{{
+			parts = append(parts, inboundMediaPart{
 				kind: "image", ref: wsMediaRef{URL: body.Image.URL, AESKey: body.Image.AESKey},
-			}}
+			})
 		}
 	case "file":
 		if body.File != nil {
-			return []inboundMediaPart{{
+			parts = append(parts, inboundMediaPart{
 				kind: "file", ref: wsMediaRef{URL: body.File.URL, AESKey: body.File.AESKey},
-			}}
+			})
 		}
 	}
-	return nil
+	return appendQuotedFilePart(parts, body.Quote)
+}
+
+func appendQuotedFilePart(parts []inboundMediaPart, quote *wsQuoteBlock) []inboundMediaPart {
+	if quote != nil && quote.MsgType == "file" && quote.File != nil {
+		parts = append(parts, inboundMediaPart{
+			kind: "file", ref: wsMediaRef{URL: quote.File.URL, AESKey: quote.File.AESKey},
+		})
+	}
+	return parts
 }
 
 func (p *Platform) populateInboundMedia(
@@ -311,7 +327,7 @@ func decryptWeComMedia(ciphertext []byte, encodedKey string) ([]byte, error) {
 	}
 	plain := make([]byte, len(ciphertext))
 	cipher.NewCBCDecrypter(block, key[:aes.BlockSize]).CryptBlocks(plain, ciphertext)
-	return strictPKCS7Unpad(plain, aes.BlockSize)
+	return strictPKCS7Unpad(plain, wecomPKCS7BlockSize)
 }
 
 func decodeWeComMediaKey(encoded string) ([]byte, error) {
@@ -340,12 +356,12 @@ func decodeWeComMediaKey(encoded string) ([]byte, error) {
 	return key, nil
 }
 
-func strictPKCS7Unpad(data []byte, blockSize int) ([]byte, error) {
-	if len(data) == 0 || len(data)%blockSize != 0 {
+func strictPKCS7Unpad(data []byte, maxPadding int) ([]byte, error) {
+	if len(data) == 0 || len(data)%aes.BlockSize != 0 {
 		return nil, errors.New("wecom: invalid PKCS#7 padded data")
 	}
 	padding := int(data[len(data)-1])
-	if padding < 1 || padding > blockSize || padding > len(data) {
+	if padding < 1 || padding > maxPadding || padding > len(data) {
 		return nil, errors.New("wecom: invalid PKCS#7 padding")
 	}
 	for _, value := range data[len(data)-padding:] {
