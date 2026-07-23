@@ -7,12 +7,19 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 [ "$(find "$repo_root/agent" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 1 ] || fail 'agent directory must contain only codex'
 [ -d "$repo_root/agent/codex" ] || fail 'agent/codex missing'
 
-[ "$(find "$repo_root/platform" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 2 ] || fail 'platform directory must contain only feishu and weixin'
+[ "$(find "$repo_root/platform" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 3 ] || fail 'platform directory must contain only feishu, weixin and wecom'
 [ -d "$repo_root/platform/feishu" ] || fail 'platform/feishu missing'
 [ -d "$repo_root/platform/weixin" ] || fail 'platform/weixin missing'
+[ -d "$repo_root/platform/wecom" ] || fail 'platform/wecom missing'
+
+for forbidden_platform in telegram slack discord dingtalk
+do
+  [ ! -e "$repo_root/platform/$forbidden_platform" ] || fail "unexpected platform: $forbidden_platform"
+done
 
 expected_plugins='plugin_agent_codex.go
 plugin_platform_feishu.go
+plugin_platform_wecom.go
 plugin_platform_weixin.go'
 actual_plugins=$(find "$repo_root/cmd/cc-connect" -maxdepth 1 -name 'plugin_*.go' -exec basename {} \; | LC_ALL=C sort)
 [ "$actual_plugins" = "$expected_plugins" ] || fail "unexpected plugin surface:\n$actual_plugins"
@@ -37,4 +44,4 @@ do
   grep -F 'codex -C "$HOME" -s workspace-write -a on-request' "$repo_root/$readme" >/dev/null || fail "$readme does not expose the interactive Agent installer"
 done
 
-printf 'PASS: minimal Codex Feishu Weixin scope\n'
+printf 'PASS: minimal Codex Feishu Weixin WeCom scope\n'

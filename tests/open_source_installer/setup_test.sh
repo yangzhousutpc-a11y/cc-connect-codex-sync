@@ -106,29 +106,40 @@ assert_contains "$case_root/calls" 'bootstrap <--activate>'
 assert_contains "$case_root/calls" 'doctor'
 [ "$(cat "$case_root/home/cc-connect/data/config.toml")" = keep ] || fail 'upgrade changed config'
 
-for platform_case in feishu weixin both; do
+assert_platform_choice() {
+  choice=$1
+  shift
+  platform_case=choice_$choice
   new_case "$platform_case"
-  case "$platform_case" in
-    feishu) choice=1 ;;
-    weixin) choice=2 ;;
-    both) choice=3 ;;
-  esac
   run_setup "$choice\ndemo project\n$case_root/work dir\n" >/dev/null
   [ "$(grep -c '^bootstrap$' "$case_root/calls")" = 1 ] || fail "$platform_case built more than once"
   assert_contains "$case_root/calls" 'runtime <config> <init>'
   assert_contains "$case_root/calls" 'install <--binary>'
   assert_contains "$case_root/calls" 'doctor'
-  case "$platform_case" in
-    feishu) assert_contains "$case_root/calls" 'runtime <feishu> <setup>' ;;
-    weixin) assert_contains "$case_root/calls" 'runtime <weixin> <setup>' ;;
-    both)
-      assert_contains "$case_root/calls" 'runtime <feishu> <setup>'
-      assert_contains "$case_root/calls" 'runtime <weixin> <setup>'
-      ;;
-  esac
+  selected_platforms=" $* "
+  for platform in feishu weixin wecom; do
+    expected="runtime <$platform> <setup> <--config> <$case_root/home/cc-connect/data/config.toml.setup> <--project> <demo project>"
+    call_count=$(grep -F -c -- "$expected" "$case_root/calls" || true)
+    case "$selected_platforms" in
+      *" $platform "*)
+        [ "$call_count" = 1 ] || fail "$platform_case configured $platform $call_count times"
+        ;;
+      *)
+        [ "$call_count" = 0 ] || fail "$platform_case unexpectedly configured $platform"
+        ;;
+    esac
+  done
   [ -f "$case_root/home/cc-connect/data/config.toml" ] || fail "$platform_case missing final config"
   assert_absent "$case_root/home/cc-connect/data/config.toml.setup"
-done
+}
+
+assert_platform_choice 1 feishu
+assert_platform_choice 2 weixin
+assert_platform_choice 3 feishu weixin
+assert_platform_choice 4 wecom
+assert_platform_choice 5 feishu wecom
+assert_platform_choice 6 weixin wecom
+assert_platform_choice 7 feishu weixin wecom
 
 new_case platform_failure
 CC_TEST_FAIL_PLATFORM=weixin

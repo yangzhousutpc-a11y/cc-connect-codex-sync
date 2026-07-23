@@ -21,9 +21,16 @@ while IFS= read -r path; do
     printf 'public bundle contains symlink: %s\n' "$path" >&2
     exit 1
   fi
+  case "$path" in
+    */.wecom|*/data/wecom|*/state/wecom)
+      printf 'public bundle contains WeCom local state: %s\n' "$path" >&2
+      exit 1
+      ;;
+  esac
   name=${path##*/}
   case "$name" in
-    config.toml|daemon.json|sessions|logs|crons|timers|operations|.git)
+    config.toml|daemon.json|sessions|logs|crons|timers|operations|.git|\
+    wecom-state|wecom_state|wecom-session|wecom_sessions|wecom-token|wecom_token)
       printf 'public bundle contains forbidden object: %s\n' "$path" >&2
       exit 1
       ;;
@@ -53,11 +60,11 @@ esac
 secret_matches=$scan_root/secret-matches
 grep_status=0
 grep -r -n -E \
-  '^[[:space:]]*(app_secret|api_key|access_token)[[:space:]]*=' \
+  '^[[:space:]]*(app_secret|api_key|access_token|bot_secret)[[:space:]]*=' \
   "$bundle" >"$secret_matches" 2>"$scan_root/secret-errors" || grep_status=$?
 case "$grep_status" in
   0) ;;
-  1) exit 0 ;;
+  1) ;;
   *)
     cat "$scan_root/secret-errors" >&2
     printf 'public bundle secret scan failed\n' >&2
@@ -90,8 +97,10 @@ while IFS= read -r assignment; do
     source/config/config_test.go'|app_secret = "old_feishu_secret"'|\
     source/config/config_test.go'|app_secret = "old_lark_secret"'|\
     source/config/config_test.go'|app_secret = "old_secret"'|\
+    source/config/config_test.go'|app_secret = "sec_keep"'|\
     source/config/config_test.go'|app_secret = "test"'|\
-    source/config/config_test.go'|app_secret = "y"')
+    source/config/config_test.go'|app_secret = "y"'|\
+    source/config/config_test.go'|bot_secret = "secret_old"')
       continue
       ;;
   esac
@@ -100,3 +109,22 @@ while IFS= read -r assignment; do
     "$assignment" >&2
   exit 1
 done <"$secret_matches"
+
+bot_id_matches=$scan_root/bot-id-matches
+grep_status=0
+grep -r -n -E \
+  '^[[:space:]]*bot_id[[:space:]]*=[[:space:]]*"aib[A-Za-z0-9_-]{12,}"' \
+  "$bundle" >"$bot_id_matches" 2>"$scan_root/bot-id-errors" || grep_status=$?
+case "$grep_status" in
+  0)
+    cat "$bot_id_matches" >&2
+    printf 'public bundle contains a likely real WeCom BotID\n' >&2
+    exit 1
+    ;;
+  1) ;;
+  *)
+    cat "$scan_root/bot-id-errors" >&2
+    printf 'public bundle BotID scan failed\n' >&2
+    exit 1
+    ;;
+esac

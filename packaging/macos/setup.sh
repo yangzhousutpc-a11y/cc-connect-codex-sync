@@ -88,13 +88,24 @@ note '请选择需要连接的平台：'
 note '  1) 飞书'
 note '  2) 个人微信'
 note '  3) 飞书和个人微信'
-printf '请输入 1、2 或 3：'
+note '  4) 企业微信'
+note '  5) 飞书和企业微信'
+note '  6) 个人微信和企业微信'
+note '  7) 飞书、个人微信和企业微信'
+printf '请输入 1 到 7：'
 IFS= read -r platform_choice || die '未读取到平台选择'
+setup_feishu=0
+setup_weixin=0
+setup_wecom=0
 case "$platform_choice" in
-  1) setup_feishu=1; setup_weixin=0 ;;
-  2) setup_feishu=0; setup_weixin=1 ;;
+  1) setup_feishu=1 ;;
+  2) setup_weixin=1 ;;
   3) setup_feishu=1; setup_weixin=1 ;;
-  *) die '平台选择无效，只能输入 1、2 或 3' ;;
+  4) setup_wecom=1 ;;
+  5) setup_feishu=1; setup_wecom=1 ;;
+  6) setup_weixin=1; setup_wecom=1 ;;
+  7) setup_feishu=1; setup_weixin=1; setup_wecom=1 ;;
+  *) die '平台选择必须是 1 到 7' ;;
 esac
 
 printf '请输入项目名称：'
@@ -137,6 +148,10 @@ fi
 if [ "$setup_weixin" -eq 1 ]; then
   note '请按照终端提示完成微信扫码登录。'
   "$runtime" weixin setup --config "$staging_config" --project "$project"
+fi
+if [ "$setup_wecom" -eq 1 ]; then
+  note '配置企业微信智能机器人'
+  "$runtime" wecom setup --config "$staging_config" --project "$project"
 fi
 
 ln "$staging_config" "$config_path" || die '正式配置已被其他进程创建，拒绝覆盖'
