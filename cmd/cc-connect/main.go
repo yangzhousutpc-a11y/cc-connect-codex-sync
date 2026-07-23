@@ -249,6 +249,9 @@ func main() {
 		case "weixin":
 			runWeixin(os.Args[2:])
 			return
+		case "wecom":
+			runWeCom(os.Args[2:])
+			return
 		case "doctor":
 			runDoctor(os.Args[2:])
 			return
@@ -1578,6 +1581,10 @@ Commands:
     new              Force QR login
     bind             Bind existing ilink bot token
 
+  wecom              Setup Enterprise WeChat intelligent-bot credentials
+    setup            Configure an Enterprise WeChat intelligent bot
+    bind             Bind existing bot_id/bot_secret
+
   config             Manage configuration
     example          Print a complete annotated config.toml example
     init             Create a minimal Codex config without overwriting
@@ -1597,6 +1604,7 @@ Examples:
   cc-connect cron list                List all scheduled tasks
   cc-connect feishu setup             Setup Feishu/Lark bot credentials
   cc-connect weixin setup             Setup Weixin (ilink) with QR or --token
+  cc-connect wecom setup              Setup Enterprise WeChat intelligent-bot credentials
   cc-connect update                   Update to the latest version
   cc-connect config format            Format the config file
   cc-connect config example > c.toml  Save example config to a file

@@ -2250,6 +2250,272 @@ func SaveFeishuPlatformCredentials(opts FeishuCredentialUpdateOptions) (*FeishuC
 	}, nil
 }
 
+// EnsureProjectWithWeComOptions controls project auto-provisioning for
+// Enterprise WeChat intelligent-bot setup.
+type EnsureProjectWithWeComOptions struct {
+	ProjectName      string
+	CloneFromProject string
+	WorkDir          string
+	AgentType        string
+}
+
+// EnsureProjectWithWeComResult describes whether setup created a project or
+// added its WeCom platform.
+type EnsureProjectWithWeComResult struct {
+	Created          bool
+	AddedPlatform    bool
+	ProjectIndex     int
+	PlatformAbsIndex int
+	PlatformType     string
+}
+
+// WeComCredentialUpdateOptions selects and updates one WeCom platform.
+type WeComCredentialUpdateOptions struct {
+	ProjectName   string
+	PlatformIndex int
+	BotID         string
+	BotSecret     string
+	AllowFrom     string
+}
+
+// WeComCredentialUpdateResult describes where credentials were written.
+type WeComCredentialUpdateResult struct {
+	ProjectName      string
+	ProjectIndex     int
+	PlatformAbsIndex int
+	PlatformType     string
+	AllowFrom        string
+}
+
+// EnsureProjectWithWeComPlatform ensures the target project has exactly one
+// reusable WeCom setup target. Existing WeCom entries are never duplicated.
+func EnsureProjectWithWeComPlatform(opts EnsureProjectWithWeComOptions) (*EnsureProjectWithWeComResult, error) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	if ConfigPath == "" {
+		return nil, fmt.Errorf("config path not set")
+	}
+	projectName := strings.TrimSpace(opts.ProjectName)
+	if projectName == "" {
+		return nil, fmt.Errorf("project name is required")
+	}
+
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	raw := string(data)
+	cfg := &Config{}
+	if err := toml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	for i := range cfg.Projects {
+		if cfg.Projects[i].Name != projectName {
+			continue
+		}
+		for j := range cfg.Projects[i].Platforms {
+			if strings.EqualFold(strings.TrimSpace(cfg.Projects[i].Platforms[j].Type), "wecom") {
+				return &EnsureProjectWithWeComResult{
+					ProjectIndex:     i,
+					PlatformAbsIndex: j,
+					PlatformType:     "wecom",
+				}, nil
+			}
+		}
+
+		lines, hadTrailing := splitConfigLines(raw)
+		spans := buildRawProjectSpans(lines)
+		if i >= len(spans) {
+			return nil, fmt.Errorf("project %q located in parsed config but not raw file", projectName)
+		}
+		insertAt := spans[i].end + 1
+		block := make([]string, 0, 7)
+		if insertAt > 0 && strings.TrimSpace(lines[insertAt-1]) != "" {
+			block = append(block, "")
+		}
+		block = append(block,
+			"[[projects.platforms]]",
+			`type = "wecom"`,
+			"",
+			"[projects.platforms.options]",
+			`mode = "websocket"`,
+		)
+		if insertAt < len(lines) && strings.TrimSpace(lines[insertAt]) != "" {
+			block = append(block, "")
+		}
+		lines = insertLines(lines, insertAt, block)
+		if err := writeRawConfig(joinConfigLines(lines, hadTrailing)); err != nil {
+			return nil, err
+		}
+		return &EnsureProjectWithWeComResult{
+			AddedPlatform:    true,
+			ProjectIndex:     i,
+			PlatformAbsIndex: len(cfg.Projects[i].Platforms),
+			PlatformType:     "wecom",
+		}, nil
+	}
+
+	agent := pickAgentTemplateForNewProject(cfg, EnsureProjectWithFeishuOptions{
+		CloneFromProject: opts.CloneFromProject,
+		WorkDir:          opts.WorkDir,
+		AgentType:        opts.AgentType,
+	})
+	if agent.Type == "" {
+		agent.Type = "codex"
+	}
+	if agent.Options == nil {
+		agent.Options = map[string]any{}
+	}
+	if workDir := strings.TrimSpace(opts.WorkDir); workDir != "" {
+		agent.Options["work_dir"] = workDir
+	}
+
+	lines, hadTrailing := splitConfigLines(raw)
+	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
+		lines = append(lines, "")
+	}
+	lines = append(lines,
+		"[[projects]]",
+		fmt.Sprintf("name = %s", quoteTomlString(projectName)),
+		"",
+		"[projects.agent]",
+		fmt.Sprintf("type = %s", quoteTomlString(agent.Type)),
+		"",
+		"[projects.agent.options]",
+	)
+	if wd, ok := agent.Options["work_dir"].(string); ok && strings.TrimSpace(wd) != "" {
+		lines = append(lines, fmt.Sprintf("work_dir = %s", quoteTomlString(wd)))
+	}
+	if mode, ok := agent.Options["mode"].(string); ok && strings.TrimSpace(mode) != "" {
+		lines = append(lines, fmt.Sprintf("mode = %s", quoteTomlString(mode)))
+	}
+	lines = append(lines,
+		"",
+		"[[projects.platforms]]",
+		`type = "wecom"`,
+		"",
+		"[projects.platforms.options]",
+		`mode = "websocket"`,
+	)
+	if err := writeRawConfig(joinConfigLines(lines, hadTrailing)); err != nil {
+		return nil, err
+	}
+	return &EnsureProjectWithWeComResult{
+		Created:          true,
+		ProjectIndex:     len(cfg.Projects),
+		PlatformAbsIndex: 0,
+		PlatformType:     "wecom",
+	}, nil
+}
+
+// SaveWeComPlatformCredentials updates one WeCom intelligent-bot entry while
+// preserving unrelated platforms and options.
+func SaveWeComPlatformCredentials(opts WeComCredentialUpdateOptions) (*WeComCredentialUpdateResult, error) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	if ConfigPath == "" {
+		return nil, fmt.Errorf("config path not set")
+	}
+	projectName := strings.TrimSpace(opts.ProjectName)
+	botID := strings.TrimSpace(opts.BotID)
+	botSecret := strings.TrimSpace(opts.BotSecret)
+	if projectName == "" {
+		return nil, fmt.Errorf("project name is required")
+	}
+	if botID == "" || botSecret == "" {
+		return nil, fmt.Errorf("bot_id and bot_secret are required")
+	}
+	if opts.PlatformIndex < 0 {
+		return nil, fmt.Errorf("platform index must be >= 0")
+	}
+
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	raw := string(data)
+	cfg := &Config{}
+	if err := toml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	projectIdx := -1
+	for i := range cfg.Projects {
+		if cfg.Projects[i].Name == projectName {
+			projectIdx = i
+			break
+		}
+	}
+	if projectIdx < 0 {
+		return nil, fmt.Errorf("project %q not found", projectName)
+	}
+
+	candidates := make([]int, 0, len(cfg.Projects[projectIdx].Platforms))
+	for i := range cfg.Projects[projectIdx].Platforms {
+		if strings.EqualFold(strings.TrimSpace(cfg.Projects[projectIdx].Platforms[i].Type), "wecom") {
+			candidates = append(candidates, i)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("project %q has no wecom platform", projectName)
+	}
+	targetPos := 0
+	if opts.PlatformIndex > 0 {
+		targetPos = opts.PlatformIndex - 1
+	}
+	if targetPos >= len(candidates) {
+		return nil, fmt.Errorf(
+			"platform index %d out of range: project %q has %d wecom platform(s)",
+			opts.PlatformIndex, projectName, len(candidates),
+		)
+	}
+	absIdx := candidates[targetPos]
+	platform := &cfg.Projects[projectIdx].Platforms[absIdx]
+	allowFrom := strings.TrimSpace(stringOption(platform.Options["allow_from"]))
+	if supplied := strings.TrimSpace(opts.AllowFrom); supplied != "" {
+		allowFrom = supplied
+	}
+
+	lines, hadTrailing := splitConfigLines(raw)
+	spans := buildRawProjectSpans(lines)
+	if projectIdx >= len(spans) || absIdx >= len(spans[projectIdx].platforms) {
+		return nil, fmt.Errorf("wecom platform located in parsed config but not raw file")
+	}
+	reloadSpan := func() rawPlatformSpan {
+		spans = buildRawProjectSpans(lines)
+		return spans[projectIdx].platforms[absIdx]
+	}
+	span := spans[projectIdx].platforms[absIdx]
+	if span.optionsStart < 0 {
+		insertAt := span.end + 1
+		lines = insertLines(lines, insertAt, []string{"", "[projects.platforms.options]"})
+		span = reloadSpan()
+	}
+	lines = upsertTomlStringKey(lines, span.optionsStart+1, span.optionsEnd, "mode", "websocket")
+	span = reloadSpan()
+	lines = upsertTomlStringKey(lines, span.optionsStart+1, span.optionsEnd, "bot_id", botID)
+	span = reloadSpan()
+	lines = upsertTomlStringKey(lines, span.optionsStart+1, span.optionsEnd, "bot_secret", botSecret)
+	span = reloadSpan()
+	if strings.TrimSpace(opts.AllowFrom) != "" {
+		lines = upsertTomlStringKey(lines, span.optionsStart+1, span.optionsEnd, "allow_from", allowFrom)
+	}
+	if err := writeRawConfig(joinConfigLines(lines, hadTrailing)); err != nil {
+		return nil, err
+	}
+
+	return &WeComCredentialUpdateResult{
+		ProjectName:      projectName,
+		ProjectIndex:     projectIdx,
+		PlatformAbsIndex: absIdx,
+		PlatformType:     "wecom",
+		AllowFrom:        allowFrom,
+	}, nil
+}
+
 func stringOption(v any) string {
 	if s, ok := v.(string); ok {
 		return s

@@ -1631,6 +1631,151 @@ func TestSaveFeishuPlatformCredentials_PreservesCommentsAndUnknownFields(t *test
 	}
 }
 
+const wecomConfigFixture = `
+[[projects]]
+name = "alpha"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "/tmp/alpha"
+
+[[projects.platforms]]
+type = "feishu"
+
+[projects.platforms.options]
+app_id = "cli_keep"
+app_secret = "sec_keep"
+
+[[projects.platforms]]
+type = "wecom"
+
+[projects.platforms.options]
+mode = "websocket"
+bot_id = "bot_old"
+bot_secret = "secret_old"
+allow_from = "zhangsan,lisi"
+custom_option = "keep_me"
+`
+
+func TestSaveWeComPlatformCredentialsUpdatesOnlyTargetPlatform(t *testing.T) {
+	configPath := writeConfigFixture(t, wecomConfigFixture)
+	patchConfigPath(t, configPath)
+
+	result, err := SaveWeComPlatformCredentials(WeComCredentialUpdateOptions{
+		ProjectName: "alpha",
+		BotID:       "bot_new",
+		BotSecret:   "secret_new",
+	})
+	if err != nil {
+		t.Fatalf("SaveWeComPlatformCredentials returned error: %v", err)
+	}
+	if result.PlatformType != "wecom" || result.PlatformAbsIndex != 1 {
+		t.Fatalf("result = %#v, want wecom platform index 1", result)
+	}
+	if result.AllowFrom != "zhangsan,lisi" {
+		t.Fatalf("result.AllowFrom = %q, want preserved allow_from", result.AllowFrom)
+	}
+
+	cfg := readConfigFixture(t, configPath)
+	if len(cfg.Projects[0].Platforms) != 2 {
+		t.Fatalf("platform count = %d, want 2", len(cfg.Projects[0].Platforms))
+	}
+	feishu := cfg.Projects[0].Platforms[0]
+	if got := stringMapValue(feishu.Options, "app_id"); got != "cli_keep" {
+		t.Fatalf("other platform app_id = %q, want preserved", got)
+	}
+	wecom := cfg.Projects[0].Platforms[1]
+	if got := stringMapValue(wecom.Options, "mode"); got != "websocket" {
+		t.Fatalf("mode = %q, want websocket", got)
+	}
+	if got := stringMapValue(wecom.Options, "bot_id"); got != "bot_new" {
+		t.Fatalf("bot_id = %q, want bot_new", got)
+	}
+	if got := stringMapValue(wecom.Options, "bot_secret"); got != "secret_new" {
+		t.Fatalf("bot_secret = %q, want secret_new", got)
+	}
+	if got := stringMapValue(wecom.Options, "allow_from"); got != "zhangsan,lisi" {
+		t.Fatalf("allow_from = %q, want preserved", got)
+	}
+	if got := stringMapValue(wecom.Options, "custom_option"); got != "keep_me" {
+		t.Fatalf("custom_option = %q, want preserved", got)
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("config permissions = %o, want 600", got)
+	}
+}
+
+func TestSaveWeComPlatformCredentialsCanReplaceAllowFrom(t *testing.T) {
+	configPath := writeConfigFixture(t, wecomConfigFixture)
+	patchConfigPath(t, configPath)
+
+	result, err := SaveWeComPlatformCredentials(WeComCredentialUpdateOptions{
+		ProjectName: "alpha",
+		BotID:       "bot_new",
+		BotSecret:   "secret_new",
+		AllowFrom:   "wangwu",
+	})
+	if err != nil {
+		t.Fatalf("SaveWeComPlatformCredentials returned error: %v", err)
+	}
+	if result.AllowFrom != "wangwu" {
+		t.Fatalf("result.AllowFrom = %q, want wangwu", result.AllowFrom)
+	}
+	cfg := readConfigFixture(t, configPath)
+	if got := stringMapValue(cfg.Projects[0].Platforms[1].Options, "allow_from"); got != "wangwu" {
+		t.Fatalf("allow_from = %q, want wangwu", got)
+	}
+}
+
+func TestSaveWeComPlatformCredentialsRejectsEmptyCredentials(t *testing.T) {
+	configPath := writeConfigFixture(t, wecomConfigFixture)
+	patchConfigPath(t, configPath)
+
+	for _, tc := range []WeComCredentialUpdateOptions{
+		{ProjectName: "alpha", BotSecret: "secret"},
+		{ProjectName: "alpha", BotID: "bot"},
+	} {
+		if _, err := SaveWeComPlatformCredentials(tc); err == nil {
+			t.Fatalf("SaveWeComPlatformCredentials(%#v) returned nil error", tc)
+		}
+	}
+}
+
+func TestEnsureProjectWithWeComPlatformCreatesOrAddsOnlyOnce(t *testing.T) {
+	configPath := writeConfigFixture(t, projectWithoutFeishuFixture)
+	patchConfigPath(t, configPath)
+
+	first, err := EnsureProjectWithWeComPlatform(EnsureProjectWithWeComOptions{
+		ProjectName: "beta",
+	})
+	if err != nil {
+		t.Fatalf("EnsureProjectWithWeComPlatform returned error: %v", err)
+	}
+	if first.Created || !first.AddedPlatform || first.PlatformAbsIndex != 1 {
+		t.Fatalf("first result = %#v, want one added platform at index 1", first)
+	}
+	second, err := EnsureProjectWithWeComPlatform(EnsureProjectWithWeComOptions{
+		ProjectName: "beta",
+	})
+	if err != nil {
+		t.Fatalf("second EnsureProjectWithWeComPlatform returned error: %v", err)
+	}
+	if second.Created || second.AddedPlatform || second.PlatformAbsIndex != 1 {
+		t.Fatalf("second result = %#v, want existing platform at index 1", second)
+	}
+
+	cfg := readConfigFixture(t, configPath)
+	if len(cfg.Projects[0].Platforms) != 2 {
+		t.Fatalf("platform count = %d, want 2", len(cfg.Projects[0].Platforms))
+	}
+}
+
 func TestLoad_DefaultsAttachmentSendToOn(t *testing.T) {
 	configPath := writeConfigFixture(t, projectWithoutFeishuFixture)
 

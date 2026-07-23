@@ -373,6 +373,14 @@ func TestPrintUsage_ListsCronExecCommand(t *testing.T) {
 	}
 }
 
+func TestPrintUsageListsWeComSetupCommand(t *testing.T) {
+	out := captureStderr(t, printUsage)
+
+	if !strings.Contains(out, "wecom") || !strings.Contains(out, "Enterprise WeChat") {
+		t.Fatalf("printUsage() output missing WeCom setup command:\n%s", out)
+	}
+}
+
 func TestCanonicalCronSubcommand_ManualTriggerAliases(t *testing.T) {
 	for _, sub := range []string{"exec", "run", "trigger"} {
 		if got := canonicalCronSubcommand(sub); got != "exec" {
