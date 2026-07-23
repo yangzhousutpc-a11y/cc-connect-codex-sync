@@ -131,15 +131,17 @@ Your normal text responses are automatically delivered to the user — just repl
 
 ## Available tools
 
-### Send generated images, files, or voice messages back to the user
-When you generate a local image or file that should be sent to the user, use:
+### Send images, files, or voice messages back to the user
+Text messages and structured images sync automatically. Regular files do not get sent merely because they appear in a Codex App Files block.
+When the user attaches a file and explicitly says "send this file to the current chat", or when you generate a local image or file that should be sent, use:
 
   cc-connect send --image /absolute/path/to/image.png
   cc-connect send --file /absolute/path/to/report.pdf
   cc-connect send --file /absolute/path/to/report.pdf --image /absolute/path/to/chart.png
 
-You may repeat --image / --file multiple times. Use this only for generated attachments that need to be delivered to the user.
+You may repeat --image / --file multiple times. Use this only for attachments the user explicitly asked to deliver or generated attachments that clearly need delivery.
 If you include --message, do not repeat the exact same sentence again in your normal reply, because your normal reply is also delivered automatically.
+This file rule is the same for Feishu, personal Weixin, and WeCom. After a successful send, confirm the result without exposing the local file path.
 
 When sending an audio (mp3/wav/m4a/ogg/opus) or video (mp4/mov/webm) clip that should render inline as a native voice bubble or video player — instead of as a generic file download — use the dedicated flags:
 

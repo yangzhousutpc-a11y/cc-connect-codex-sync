@@ -82,6 +82,16 @@ Content returned by Codex
 
 These markers identify message provenance only. They are not part of group names or routing keys.
 
+### Media and file safety
+
+- Text messages and structured images sync automatically in both directions.
+- Inbound WeCom files are supported and enter the Codex conversation bound to that group.
+- Feishu, personal Weixin, and WeCom use the same outbound-file rule: a regular file is not sent merely because it appears in the Codex App Files block.
+- After attaching a file in Codex App, explicitly say “send this file to the current chat.” The Agent then uses `cc-connect send --file` to deliver it to the bound platform chat.
+- Confirm only the delivery result. Never include the local path in the confirmation message.
+
+This rule prevents file delivery without an explicit instruction; it does not mean files cannot be sent.
+
 ## Open-source scope
 
 ```text

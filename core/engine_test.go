@@ -3194,6 +3194,15 @@ func TestAgentSystemPrompt_MentionsAttachmentSend(t *testing.T) {
 	if !strings.Contains(prompt, "cc-connect send --file") {
 		t.Fatalf("prompt missing file send instructions: %q", prompt)
 	}
+	if !strings.Contains(prompt, "Files block") {
+		t.Fatalf("prompt missing implicit file-send safety boundary: %q", prompt)
+	}
+	if !strings.Contains(prompt, "send this file to the current chat") {
+		t.Fatalf("prompt missing explicit file-send instruction: %q", prompt)
+	}
+	if !strings.Contains(prompt, "without exposing the local file path") {
+		t.Fatalf("prompt missing local path protection: %q", prompt)
+	}
 	if !strings.Contains(prompt, "cc-connect send --tts") {
 		t.Fatalf("prompt missing tts send instructions: %q", prompt)
 	}

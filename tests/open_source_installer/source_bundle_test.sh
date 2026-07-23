@@ -23,7 +23,7 @@ second=$second_dist/cc-connect-source-install
 for required in \
   README.md LICENSE VERSION checksums.txt setup.sh bootstrap.sh install.sh doctor.sh uninstall.sh \
   source/go.mod source/README.md source/README.zh-CN.md source/AGENT_INSTALL.md source/install-macos.sh source/config.example.toml \
-  source/docs/wecom.md
+  source/docs/feishu.md source/docs/weixin.md source/docs/wecom.md
 do
   assert_file "$first/$required"
 done
@@ -169,6 +169,48 @@ do
   grep -F 'Platforms: Feishu, personal Weixin, WeCom' "$first/$public_entry" >/dev/null ||
     fail "$public_entry does not list the three supported platforms"
 done
+
+grep -F '文字消息和结构化图片会自动双向同步' "$first/source/README.zh-CN.md" >/dev/null ||
+  fail 'Chinese README does not bound automatic desktop sync'
+grep -F 'Text messages and structured images sync automatically' "$first/source/README.md" >/dev/null ||
+  fail 'English README does not bound automatic desktop sync'
+grep -F '企业微信入站文件' "$first/source/README.zh-CN.md" >/dev/null ||
+  fail 'Chinese README does not document inbound WeCom files'
+grep -F 'Inbound WeCom files' "$first/source/README.md" >/dev/null ||
+  fail 'English README does not document inbound WeCom files'
+grep -F 'Files block' "$first/source/README.md" >/dev/null ||
+  fail 'English README does not reject implicit Files block delivery'
+grep -F 'send this file to the current chat' "$first/source/README.md" >/dev/null ||
+  fail 'English README does not document explicit file delivery'
+grep -F 'cc-connect send --file' "$first/source/README.md" >/dev/null ||
+  fail 'English README does not document the safe file command'
+grep -F 'Never include the local path in the confirmation message' "$first/source/README.md" >/dev/null ||
+  fail 'English README does not protect local paths'
+
+for safe_file_doc in \
+  source/README.zh-CN.md \
+  source/docs/feishu.md \
+  source/docs/weixin.md \
+  source/docs/wecom.md \
+  source/AGENTS.md
+do
+  grep -F 'Files block' "$first/$safe_file_doc" >/dev/null ||
+    fail "$safe_file_doc does not reject implicit Files block delivery"
+  grep -F '把这个文件发送到当前群' "$first/$safe_file_doc" >/dev/null ||
+    fail "$safe_file_doc does not document explicit file delivery"
+  grep -F 'cc-connect send --file' "$first/$safe_file_doc" >/dev/null ||
+    fail "$safe_file_doc does not document the safe file command"
+  grep -F '不要在确认消息中展示本机路径' "$first/$safe_file_doc" >/dev/null ||
+    fail "$safe_file_doc does not protect local paths"
+done
+
+agent_prompt=$first/source/core/interfaces.go
+grep -F 'Files block' "$agent_prompt" >/dev/null ||
+  fail 'Agent help does not reject implicit Files block delivery'
+grep -F 'send this file to the current chat' "$agent_prompt" >/dev/null ||
+  fail 'Agent help does not require explicit file delivery'
+grep -F 'cc-connect send --file' "$agent_prompt" >/dev/null ||
+  fail 'Agent help does not document the safe file command'
 
 verify_checksums() {
   bundle=$1
