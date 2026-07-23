@@ -60,7 +60,7 @@ esac
 secret_matches=$scan_root/secret-matches
 grep_status=0
 grep -r -n -E \
-  '^[[:space:]]*(app_secret|api_key|access_token|bot_secret)[[:space:]]*=' \
+  '(^|[,{][[:space:]]*)(app_secret|api_key|access_token|bot_secret)[[:space:]]*=' \
   "$bundle" >"$secret_matches" 2>"$scan_root/secret-errors" || grep_status=$?
 case "$grep_status" in
   0) ;;
@@ -88,6 +88,9 @@ while IFS= read -r assignment; do
   esac
 
   case "$file|$normalized" in
+    source/tests/open_source_installer/source_bundle_test.sh'|assert_scan_rejects '*)
+      continue
+      ;;
     source/config/config_test.go'|api_key = "sk-primary"'|\
     source/config/config_test.go'|api_key = "sk-backup"'|\
     source/config/config_test.go'|api_key = "sk-shared"'|\
@@ -113,14 +116,10 @@ done <"$secret_matches"
 bot_id_matches=$scan_root/bot-id-matches
 grep_status=0
 grep -r -n -E \
-  '^[[:space:]]*bot_id[[:space:]]*=[[:space:]]*"aib[A-Za-z0-9_-]{12,}"' \
+  "(^|[,{][[:space:]]*)bot_id[[:space:]]*=[[:space:]]*['\"]aib[A-Za-z0-9_-]{12,}['\"]" \
   "$bundle" >"$bot_id_matches" 2>"$scan_root/bot-id-errors" || grep_status=$?
 case "$grep_status" in
-  0)
-    cat "$bot_id_matches" >&2
-    printf 'public bundle contains a likely real WeCom BotID\n' >&2
-    exit 1
-    ;;
+  0) ;;
   1) ;;
   *)
     cat "$scan_root/bot-id-errors" >&2
@@ -128,3 +127,21 @@ case "$grep_status" in
     exit 1
     ;;
 esac
+
+while IFS= read -r assignment; do
+  relative=${assignment#"$bundle"/}
+  file=${relative%%:*}
+  remainder=${relative#*:}
+  content=${remainder#*:}
+  normalized=$(printf '%s\n' "$content" | sed \
+    -e 's/^[[:space:]]*//' \
+    -e 's/[[:space:]]*$//')
+  case "$file|$normalized" in
+    source/tests/open_source_installer/source_bundle_test.sh'|assert_scan_rejects '*)
+      continue
+      ;;
+  esac
+  printf 'public bundle contains a likely real WeCom BotID: %s\n' \
+    "$assignment" >&2
+  exit 1
+done <"$bot_id_matches"
