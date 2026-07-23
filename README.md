@@ -78,16 +78,26 @@ packaging/macos
 
 The repository contains only Codex, Feishu, personal Weixin, and their required infrastructure. It does not ship other agents, other messaging platforms, a web admin UI, or an npm distribution layer.
 
-## Choose the right download
+## Choose the right installation
 
-- **Regular users:** download the archive from [Releases](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases), extract it, and run `./setup.sh`. The matching `.sha256` file only verifies download integrity; it is not a second installer.
+- **Regular users:** use the one-command installer below. It downloads the latest [Release](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases), verifies its SHA-256 checksum, and starts `./setup.sh`.
 - **Developers:** clone this repository to build, test, or contribute from source. Release archives are distribution artifacts and are not committed to the source repository.
 
 ## One-command macOS installation (recommended)
 
 Requirements: macOS 12 or later, network access, and an installed and authenticated Codex CLI. Go does not need to be preinstalled; the installer downloads and verifies a temporary toolchain when necessary.
 
-After downloading the latest archive and matching `.sha256` file, run:
+Copy this single command:
+
+```bash
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/yangzhousutpc-a11y/cc-connect-codex-sync/main/install-macos.sh)"
+```
+
+The downloader uses the latest stable GitHub Release, verifies the published SHA-256 file, extracts into a private temporary directory, and starts the existing guided setup. It does not use `sudo`. Feishu credentials, Weixin QR login, and macOS permission decisions remain interactive.
+
+### Manual verified download (alternative)
+
+If you prefer to inspect every step, download the latest archive and matching `.sha256` file from [Releases](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases), then run:
 
 ```bash
 shasum -a 256 -c cc-connect-codex-sync-*-macos-source.tar.gz.sha256

@@ -169,4 +169,10 @@ unset CC_TEST_SETUP_EXIT
 assert_contains "$calls" 'setup'
 assert_cleaned
 
+expected_command='sh -c "$(curl -fsSL https://raw.githubusercontent.com/yangzhousutpc-a11y/cc-connect-codex-sync/main/install-macos.sh)"'
+for public_doc in README.md README.zh-CN.md INSTALL.md; do
+  grep -F -- "$expected_command" "$repo_root/$public_doc" >/dev/null ||
+    fail "$public_doc does not contain the public one-command installer"
+done
+
 printf 'PASS: one-command macOS installer\n'

@@ -2,14 +2,22 @@
 
 ## 一键安装（推荐）
 
-要求：macOS 12 或更高版本，并且 Codex CLI 已安装和登录。下载 Release 的源码安装包及 `.sha256`，校验并解压后只需运行：
+要求：macOS 12 或更高版本，并且 Codex CLI 已安装和登录。复制这一条命令：
 
 ```bash
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/yangzhousutpc-a11y/cc-connect-codex-sync/main/install-macos.sh)"
+```
+
+脚本会定位最新稳定 Release、下载源码安装包及 `.sha256`、完成校验和解压，再启动安装向导。向导会完成构建、配置、平台授权、服务激活和诊断；已有安装会保留配置、会话及登录状态并执行安全升级。
+
+如需逐步检查，可在 [Releases](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases) 手动下载两个文件后运行：
+
+```bash
+shasum -a 256 -c cc-connect-codex-sync-*-macos-source.tar.gz.sha256
+tar -xzf cc-connect-codex-sync-*-macos-source.tar.gz
 cd cc-connect-source-install
 ./setup.sh
 ```
-
-向导会完成构建、配置、平台授权、服务激活和诊断；已有安装会保留配置、会话及登录状态并执行安全升级。
 
 ## Agent 引导式安装（备选）
 
