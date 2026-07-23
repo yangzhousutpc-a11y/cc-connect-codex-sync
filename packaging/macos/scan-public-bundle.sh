@@ -88,9 +88,6 @@ while IFS= read -r assignment; do
   esac
 
   case "$file|$normalized" in
-    source/tests/open_source_installer/source_bundle_test.sh'|assert_scan_rejects '*)
-      continue
-      ;;
     source/config/config_test.go'|api_key = "sk-primary"'|\
     source/config/config_test.go'|api_key = "sk-backup"'|\
     source/config/config_test.go'|api_key = "sk-shared"'|\
@@ -136,11 +133,6 @@ while IFS= read -r assignment; do
   normalized=$(printf '%s\n' "$content" | sed \
     -e 's/^[[:space:]]*//' \
     -e 's/[[:space:]]*$//')
-  case "$file|$normalized" in
-    source/tests/open_source_installer/source_bundle_test.sh'|assert_scan_rejects '*)
-      continue
-      ;;
-  esac
   printf 'public bundle contains a likely real WeCom BotID: %s\n' \
     "$assignment" >&2
   exit 1
