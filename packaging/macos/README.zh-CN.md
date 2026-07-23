@@ -2,6 +2,11 @@
 
 这个安装包面向希望在本机从公开源码构建 cc-connect 的 macOS 用户。普通用户只需运行 `./setup.sh`；向导会调用现有的校验、构建、安装和诊断组件，不使用安装包外的预编译 cc-connect 程序。
 
+```text
+Agent: Codex
+Platforms: Feishu, personal Weixin, WeCom
+```
+
 ## 安装要求与边界
 
 - macOS 12 或更高版本；支持 Intel（`x86_64`）和 Apple Silicon（`arm64`）。
@@ -10,7 +15,7 @@
 - 至少预留约 1 GB 临时空间。
 - 用户不需要预装 Go。系统没有兼容 Go 时，脚本会下载经过 SHA-256 校验的临时工具链，并在本轮结束时清理它。
 
-向导会安全生成 Codex 最小配置，但不会替你生成平台凭据。首次安装仍需本人完成飞书授权或微信扫码。安装包不包含任何旧电脑的账号密钥、Token、微信登录状态、历史会话、日志或定时任务。
+向导会安全生成 Codex 最小配置，但不会替你生成平台凭据。首次安装仍需本人完成飞书授权、微信扫码或企业微信智能机器人配置。安装包不包含任何旧电脑的账号密钥、Token、微信登录状态、历史会话、日志或定时任务。
 
 ## 一键安装流程
 
@@ -21,7 +26,7 @@ cd cc-connect-source-install
 ./setup.sh
 ```
 
-首次安装时选择飞书、个人微信或两者，输入项目名称和 Codex 工作目录，然后完成平台授权。检测到已有 `~/cc-connect/data/config.toml` 时，向导会先征求确认，再保留配置、会话、日志和登录状态进行安全升级。
+首次安装时选择飞书、个人微信、企业微信或所需组合，输入项目名称和 Codex 工作目录，然后完成平台授权。检测到已有 `~/cc-connect/data/config.toml` 时，向导会先征求确认，再保留配置、会话、日志和登录状态进行安全升级。
 
 ## 高级手动安装
 
@@ -33,11 +38,12 @@ install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.to
 # 编辑 ~/cc-connect/data/config.toml 后，将 my-project 替换为配置中的项目名
 ~/cc-connect/runtime/cc-connect feishu setup --project my-project
 ~/cc-connect/runtime/cc-connect weixin setup --project my-project
+~/cc-connect/runtime/cc-connect wecom setup --project my-project
 ./bootstrap.sh --activate
 ./doctor.sh
 ```
 
-详细平台步骤见安装包内的 `source/docs/feishu.md` 和 `source/docs/weixin.md`。以后可以从当前安装包目录重新运行 `./setup.sh`；安装后也会在 `~/cc-connect/installer` 保留该入口。
+详细平台步骤见安装包内的 `source/docs/feishu.md`、`source/docs/weixin.md` 和 `source/docs/wecom.md`。企业微信需先在管理后台创建智能机器人并开启 API 长连接模式，再运行 `cc-connect wecom setup`，重启服务，并在手建内部群中添加机器人、@机器人 发送首条消息。BotID 与 Secret 只保存在本机配置中。以后可以从当前安装包目录重新运行 `./setup.sh`；安装后也会在 `~/cc-connect/installer` 保留该入口。
 
 ## 以后需要卸载时
 
@@ -67,7 +73,7 @@ install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.to
 - **build / 构建失败：** 确认 macOS 和架构受支持、可用临时空间约 1 GB，并允许 Go 获取模块；保留完整错误信息，修复网络或空间问题后再次运行 `./setup.sh`。
 - **login / Codex 登录失败：** 先在当前 macOS 用户的终端完成 Codex CLI 官方登录流程，并确认能正常启动会话，再重新激活。后台服务不能代替你完成登录。
 - **config / 配置失败：** 将 `~/cc-connect/data/config.toml` 与 `~/cc-connect/data/config.example.toml` 对照，修正 TOML 层级和必填项，并保持权限为 `600`。已有配置不要用示例文件覆盖。
-- **platform / 平台失败：** 飞书检查应用凭据、事件订阅和机器人权限；微信重新完成扫码授权并确认登录状态有效。每次只排查一个平台，修复后先发送测试消息。
+- **platform / 平台失败：** 飞书检查应用凭据、事件订阅和机器人权限；微信重新完成扫码授权并确认登录状态有效；企业微信检查智能机器人、API 长连接模式和本机 BotID/Secret 配置。每次只排查一个平台，修复后先发送测试消息。
 - **doctor / 诊断失败：** 按 `./doctor.sh` 标出的失败项处理，检查 `~/.local/bin` 是否在 `PATH`、launchd 服务是否运行，以及 `~/cc-connect/data/logs/cc-connect.log` 的脱敏错误。修复后重新运行 `./setup.sh`；仍无法恢复时再提交脱敏 Issue。
 
 ## 安装后的目录

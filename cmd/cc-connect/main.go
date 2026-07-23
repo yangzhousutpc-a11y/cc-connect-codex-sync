@@ -1500,6 +1500,9 @@ app_secret = "your-feishu-app-secret"
 
 # Personal Weixin can be added with:
 # cc-connect weixin setup --project my-project
+
+# Enterprise WeChat intelligent bot (API WebSocket) can be added with:
+# cc-connect wecom setup --project my-project
 `
 	return os.WriteFile(path, []byte(tmpl), 0o644)
 }
@@ -1520,9 +1523,9 @@ func printUsage() {
 | (_| (_|_____|  (_| (_) | | | | | | |  __/ (__| |_
  \___\__|      \___\___/|_| |_|_| |_|\___|\___|\__|  %s%s
 
-  Bridge Codex with Feishu and personal Weixin.
+  Bridge Codex with Feishu, personal Weixin, and WeCom.
   Agent: Codex
-  Platforms: Feishu, Weixin
+  Platforms: Feishu, personal Weixin, WeCom
 
   GitHub:  https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync
   Docs:    https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/blob/main/INSTALL.md

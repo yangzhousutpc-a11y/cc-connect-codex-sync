@@ -22,7 +22,8 @@ second=$second_dist/cc-connect-source-install
 
 for required in \
   README.md LICENSE VERSION checksums.txt setup.sh bootstrap.sh install.sh doctor.sh uninstall.sh \
-  source/go.mod source/README.md source/README.zh-CN.md source/AGENT_INSTALL.md source/install-macos.sh source/config.example.toml
+  source/go.mod source/README.md source/README.zh-CN.md source/AGENT_INSTALL.md source/install-macos.sh source/config.example.toml \
+  source/docs/wecom.md
 do
   assert_file "$first/$required"
 done
@@ -47,6 +48,52 @@ grep -F './setup.sh' "$first/README.md" >/dev/null || fail 'bundle README does n
 grep -F './setup.sh' "$first/source/AGENT_INSTALL.md" >/dev/null || fail 'Agent install does not delegate to guided setup'
 grep -F '## 高级手动安装' "$first/source/README.zh-CN.md" >/dev/null || fail 'Chinese README does not separate advanced manual installation'
 grep -F '## Advanced manual installation' "$first/source/README.md" >/dev/null || fail 'English README does not separate advanced manual installation'
+
+wecom_doc=$first/source/docs/wecom.md
+for required_text in \
+  '[企业微信-Codex]' \
+  'cc-connect wecom setup' \
+  'mode = "websocket"' \
+  'bot_id' \
+  'bot_secret' \
+  '群内需要 @机器人' \
+  '/new 不会自动创建企业微信群'
+do
+  grep -F "$required_text" "$wecom_doc" >/dev/null ||
+    fail "Enterprise WeChat guide is missing: $required_text"
+done
+
+for forbidden_text in \
+  '公网 URL' \
+  'CorpID' \
+  'AgentID' \
+  'Token' \
+  'EncodingAESKey' \
+  'cloudflared'
+do
+  if grep -F "$forbidden_text" "$wecom_doc" >/dev/null; then
+    fail "Enterprise WeChat guide incorrectly requires: $forbidden_text"
+  fi
+done
+
+grep -F 'type = "wecom"' "$first/source/config.example.toml" >/dev/null ||
+  fail 'config example does not mention Enterprise WeChat'
+grep -F '# type = "wecom"' "$first/source/config.example.toml" >/dev/null ||
+  fail 'Enterprise WeChat example must stay commented out'
+
+for public_entry in \
+  source/README.md \
+  source/README.zh-CN.md \
+  source/INSTALL.md \
+  source/config.example.toml \
+  source/packaging/macos/README.zh-CN.md \
+  source/cmd/cc-connect/main.go
+do
+  grep -F 'Agent: Codex' "$first/$public_entry" >/dev/null ||
+    fail "$public_entry does not identify Codex as the only agent"
+  grep -F 'Platforms: Feishu, personal Weixin, WeCom' "$first/$public_entry" >/dev/null ||
+    fail "$public_entry does not list the three supported platforms"
+done
 
 verify_checksums() {
   bundle=$1

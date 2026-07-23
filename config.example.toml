@@ -1,5 +1,6 @@
 # cc-connect Codex Sync minimal configuration
-# 只包含 Codex、飞书和个人微信。
+# Agent: Codex
+# Platforms: Feishu, personal Weixin, WeCom
 
 language = "zh"
 
@@ -10,7 +11,7 @@ level = "info"
 name = "my-project"
 
 # 可选：仅允许这些用户执行 /dir、/shell、/restart 等管理命令。
-# 先在飞书或微信中发送 /whoami 获取用户 ID；不要在多人环境使用 "*"。
+# 先在飞书、微信或企业微信中发送 /whoami 获取用户 ID；不要在多人环境使用 "*"。
 # admin_from = "your-user-id"
 
 [projects.agent]
@@ -47,3 +48,15 @@ token = "your-ilink-bot-bearer-token"
 base_url = "https://ilinkai.weixin.qq.com"
 allow_from = "*"
 account_id = "default"
+
+# 企业微信智能机器人：先在管理后台开启 API 长连接模式，再运行
+# `cc-connect wecom setup --project my-project` 在本机安全写入 BotID 与 Secret。
+# 以下内容保持注释，避免占位凭据影响首次启动。
+# [[projects.platforms]]
+# type = "wecom"
+#
+# [projects.platforms.options]
+# mode = "websocket"
+# bot_id = "your-wecom-bot-id"
+# bot_secret = "your-wecom-bot-secret"
+# allow_from = "*"

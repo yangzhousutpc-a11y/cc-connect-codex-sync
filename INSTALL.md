@@ -36,4 +36,11 @@ Agent 下载并校验安装包后，会调用同一个 `./setup.sh` 向导；飞
 - [中文说明](README.zh-CN.md)
 - [macOS 源码安装包说明](packaging/macos/README.zh-CN.md)
 
-本仓库只支持 Codex，并可同时配置飞书和个人微信两个消息入口。
+本仓库只支持 Codex，可配置飞书、个人微信和企业微信三个消息入口。
+
+```text
+Agent: Codex
+Platforms: Feishu, personal Weixin, WeCom
+```
+
+企业微信使用智能机器人的 API 长连接模式。请先完成安装，再按[企业微信指南](docs/wecom.md)运行 `cc-connect wecom setup`；BotID 与 Secret 只保存在本机配置中。

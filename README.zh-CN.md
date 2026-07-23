@@ -6,14 +6,19 @@
 [![Release](https://img.shields.io/github/v/release/yangzhousutpc-a11y/cc-connect-codex-sync)](https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-这是一个基于 [CC Connect](https://github.com/chenhg5/cc-connect) 改造的 **Codex 专用双向同步项目**。它不只让飞书或微信远程触发 Agent，而是把 **Codex App、飞书和个人微信** 连接成同一套会话系统的三个入口：平台消息能进入正确的 Codex 会话，Codex App 中的用户消息和回复也能回到原来的平台会话。
+```text
+Agent: Codex
+Platforms: Feishu, personal Weixin, WeCom
+```
+
+这是一个基于 [CC Connect](https://github.com/chenhg5/cc-connect) 改造的 **Codex 专用双向同步项目**。它不只让消息平台远程触发 Agent，而是把 **Codex App、飞书、个人微信和企业微信** 连接成同一套会话系统的入口：平台消息能进入正确的 Codex 会话，Codex App 中的用户消息和回复也能回到原来的平台会话。
 
 ## 这个项目解决什么问题
 
 原版 CC Connect 已经提供了“消息平台调用 Agent、结果返回消息平台”的基础能力。本项目在这个基础上，重点解决桌面端与消息平台之间的双向可见、不同平台的会话模型、并发路由正确性，以及故障和重启后的连续性。
 
-- **真正双向可见：** 飞书、个人微信和 Codex App 任一入口产生的会话内容，都能同步到对应入口。
-- **按平台设计路由：** 飞书有独立群聊容器，采用“一群一 Codex 会话”；个人微信通常只有一个长期聊天入口，采用“单入口、多逻辑 Codex 会话”。
+- **真正双向可见：** 飞书、个人微信、企业微信和 Codex App 任一入口产生的会话内容，都能同步到对应入口。
+- **按平台设计路由：** 飞书和企业微信有独立群聊容器，采用“一群一 Codex 会话”；个人微信通常只有一个长期聊天入口，采用“单入口、多逻辑 Codex 会话”。
 - **把正确性放在首位：** 防止双群、重复会话、跨群串线、恢复时丢首条消息，以及断线或发送失败造成的消息跳过。
 
 ## 在原版 CC Connect 基础上做了什么
@@ -25,7 +30,8 @@
 | 飞书 `/new` | 在 A 群执行 `/new 名称`，只创建一个 B 群和一个新 Codex 会话；A 群仍保留原会话、历史和上下文。 |
 | 新会话即时可见 | 新群创建成功后立即让对应会话出现在 Codex App，无需先发送业务消息。 |
 | 微信多逻辑会话 | 在同一个个人微信入口中，通过 `/new`、`/back`、`/list`、`/switch` 和 `/current` 管理多个 Codex 会话。 |
-| 来源感知 | 新会话使用 `[飞书-Codex]` 或 `[微信-Codex]` 命名，回传消息明确标出来自 Codex App 的用户输入或 Codex 回复。 |
+| 企业微信一群一会话 | 手建内部群、添加智能机器人并 @机器人 发送首条消息后，群稳定绑定一个 Codex 会话；`/new` 只提供建群引导。 |
+| 来源感知 | 新会话使用 `[飞书-Codex]`、`[微信-Codex]` 或 `[企业微信-Codex]` 命名，回传消息明确标出来自 Codex App 的用户输入或 Codex 回复。 |
 | 可恢复创建 | `/new` 分阶段持久化；中断或重启后复用已创建资源，避免双群、双会话和首条消息丢失。 |
 | 可靠消息中继 | 未确认送达的消息保留并重试；平台断线恢复后继续处理；多工作区绑定在重启后恢复。 |
 | Codex 兼容哨兵 | 监测 Codex CLI/app-server 事件兼容性；`/doctor` 展示同步状态，无法安全识别来源时停止错误转发。 |
@@ -54,6 +60,16 @@
 
 新微信会话使用 `[微信-Codex] 主题名称`，每条文字回复都会带当前会话简称，降低误用上下文的风险。
 
+### 企业微信：手建群、一群一会话
+
+- 在企业微信管理后台创建智能机器人，开启 API 长连接模式并取得 BotID 与 Secret。
+- 本机运行 `cc-connect wecom setup`，重启服务。
+- 手动创建内部群并添加机器人；群内需要 @机器人 发送第一条消息。
+- 每个群稳定绑定一个 `[企业微信-Codex]` 会话。
+- `/new` 不会自动创建企业微信群，也不会改变当前会话，只返回建群操作引导。
+
+完整步骤见[企业微信指南](docs/wecom.md)。Secret 只保存在本机配置，不要提交 Git。
+
 ### 同步消息标识
 
 ```text
@@ -72,11 +88,12 @@ Codex 返回的内容
 agent/codex
 platform/feishu
 platform/weixin
+platform/wecom
 core + config + daemon + cmd
 packaging/macos
 ```
 
-本仓库只保留 Codex、飞书、个人微信及其必要基础设施，不包含其他 Agent、其他聊天平台、Web 管理后台或 npm 分发层。
+本仓库只保留 Codex、飞书、个人微信、企业微信及其必要基础设施，不包含其他 Agent、其他聊天平台、Web 管理后台或 npm 分发层。
 
 ## 如何选择安装方式
 
@@ -93,7 +110,7 @@ packaging/macos
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/yangzhousutpc-a11y/cc-connect-codex-sync/main/install-macos.sh)"
 ```
 
-下载器会定位最新稳定 Release、核对公开的 SHA-256、解压到本轮私有临时目录，然后启动现有安装向导。它不会使用 `sudo`；飞书凭据、微信扫码和 macOS 权限仍由用户本人交互确认。
+下载器会定位最新稳定 Release、核对公开的 SHA-256、解压到本轮私有临时目录，然后启动现有安装向导。它不会使用 `sudo`；飞书凭据、微信扫码、企业微信智能机器人配置和 macOS 权限仍由用户本人交互确认。
 
 ### 手动下载并校验（备选）
 
@@ -106,7 +123,7 @@ cd cc-connect-source-install
 ./setup.sh
 ```
 
-首次安装时，向导只会询问要启用飞书、个人微信还是两者，以及项目名称和 Codex 工作目录；随后按提示完成飞书授权或微信扫码即可。已有配置时，`./setup.sh` 会先征求确认，再保留配置、会话和登录状态完成安全升级与诊断。
+首次安装时，向导会询问要启用的消息平台、项目名称和 Codex 工作目录；随后按提示完成飞书授权、微信扫码或企业微信智能机器人配置。已有配置时，`./setup.sh` 会先征求确认，再保留配置、会话和登录状态完成安全升级与诊断。
 
 ## Agent 引导式安装（备选）
 
@@ -116,7 +133,7 @@ cd cc-connect-source-install
 CC_CONNECT_AGENT_PROMPT="$(curl -fsSL https://raw.githubusercontent.com/yangzhousutpc-a11y/cc-connect-codex-sync/main/AGENT_INSTALL.md)" && [ -n "$CC_CONNECT_AGENT_PROMPT" ] && codex -C "$HOME" -s workspace-write -a on-request "$CC_CONNECT_AGENT_PROMPT"
 ```
 
-Agent 会自动下载并校验安装包，然后调用同一个 `./setup.sh` 向导；遇到飞书凭据、微信扫码或 macOS 权限时会暂停，由用户本人确认。完整行为和安全边界见 [Agent 安装任务](AGENT_INSTALL.md)。该方式不会跳过 Codex 审批或关闭沙箱。
+Agent 会自动下载并校验安装包，然后调用同一个 `./setup.sh` 向导；遇到飞书凭据、微信扫码、企业微信智能机器人配置或 macOS 权限时会暂停，由用户本人确认。完整行为和安全边界见 [Agent 安装任务](AGENT_INSTALL.md)。该方式不会跳过 Codex 审批或关闭沙箱。
 
 ## 高级手动安装
 
@@ -129,12 +146,13 @@ install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.to
 # 编辑 ~/cc-connect/data/config.toml，将项目名和绝对工作目录改为真实值
 ~/cc-connect/runtime/cc-connect feishu setup --project my-project
 ~/cc-connect/runtime/cc-connect weixin setup --project my-project
+~/cc-connect/runtime/cc-connect wecom setup --project my-project
 
 ./bootstrap.sh --activate
 ./doctor.sh
 ```
 
-完整权限与故障恢复说明见 [macOS 本地源码安装指南](packaging/macos/README.zh-CN.md)。平台配置见 [飞书指南](docs/feishu.md)和[微信指南](docs/weixin.md)。
+完整权限与故障恢复说明见 [macOS 本地源码安装指南](packaging/macos/README.zh-CN.md)。平台配置见 [飞书指南](docs/feishu.md)、[微信指南](docs/weixin.md)和[企业微信指南](docs/wecom.md)。
 
 ## 源码验证
 
