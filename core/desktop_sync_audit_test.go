@@ -122,6 +122,44 @@ func TestDesktopLiveSyncDoesNotLogSuccessWhenSendFails(t *testing.T) {
 	}
 }
 
+func TestDesktopLiveSyncMediaLogsDoNotLeakIdentifiersOrAttachmentData(t *testing.T) {
+	const (
+		secretSession = "thread-secret-media"
+		secretName    = "secret-local-path-name.png"
+		secretData    = "secret-attachment-bytes"
+	)
+	agent := &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
+		secretSession: {{
+			SessionID: secretSession,
+			Role:      "user",
+			Images: []ImageAttachment{{
+				FileName: secretName,
+				Data:     []byte(secretData),
+			}},
+		}},
+	}}
+	platform := &desktopMediaPlatform{desktopSyncPlatform: desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	engine.sessions.NewSession("feishu:secret-chat:secret-user", "audit").SetAgentSessionID(secretSession, "codex")
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	previous := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	engine.pollDesktopLiveSync(context.Background(), agent)
+
+	output := logs.String()
+	for _, secret := range []string{secretSession, "secret-chat", "secret-user", secretName, secretData} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("desktop media audit leaked secret metadata")
+		}
+	}
+}
+
 func TestDesktopLiveSyncRetriesUndeliveredEventsWithoutRepolling(t *testing.T) {
 	agent := &trackingDesktopSyncAgent{desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
 		"thread-retry": {

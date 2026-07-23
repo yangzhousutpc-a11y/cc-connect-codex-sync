@@ -461,6 +461,8 @@ type ExternalConversationEvent struct {
 	SessionID string
 	Role      string
 	Content   string
+	Images    []ImageAttachment
+	Files     []FileAttachment
 }
 
 // ExternalConversationPoller is an optional capability for agent backends

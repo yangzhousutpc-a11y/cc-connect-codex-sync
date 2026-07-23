@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"mime"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +23,7 @@ type desktopPollState struct {
 	initialized          bool
 	externalTurn         bool
 	deferredTurn         bool
-	deferredUser         string
+	deferredUser         core.ExternalConversationEvent
 	deferred             []desktopDeferredTurn
 	turnID               string
 	lastLookup           time.Time
@@ -32,20 +35,25 @@ type desktopPollState struct {
 
 type desktopDeferredTurn struct {
 	turnID    string
-	user      string
+	user      core.ExternalConversationEvent
 	assistant string
 }
 
 type desktopRolloutEvent struct {
 	Type    string `json:"type"`
 	Payload struct {
-		Type             string `json:"type"`
-		TurnID           string `json:"turn_id"`
-		ClientID         string `json:"client_id"`
-		Message          string `json:"message"`
-		LastAgentMessage string `json:"last_agent_message"`
+		Type             string   `json:"type"`
+		TurnID           string   `json:"turn_id"`
+		ClientID         string   `json:"client_id"`
+		Message          string   `json:"message"`
+		LocalImages      []string `json:"local_images"`
+		LastAgentMessage string   `json:"last_agent_message"`
 	} `json:"payload"`
 }
+
+const desktopAttachmentMaxBytes int64 = 20 << 20
+
+var desktopFileEntryPattern = regexp.MustCompile(`^## ([^:\r\n]+): (/[^\r\n]+)$`)
 
 type desktopOriginTicket struct {
 	sessionID string
@@ -385,7 +393,7 @@ func (a *Agent) PollExternalConversation(_ context.Context, sessionID string) ([
 		state.initialized = true
 		state.externalTurn = false
 		state.deferredTurn = false
-		state.deferredUser = ""
+		state.deferredUser = core.ExternalConversationEvent{}
 		state.deferred = nil
 		state.turnID = ""
 		state.sawTaskStarted = false
@@ -436,15 +444,14 @@ func (a *Agent) PollExternalConversation(_ context.Context, sessionID string) ([
 			state.unsafeTurn = false
 			state.externalTurn = false
 			state.deferredTurn = false
-			state.deferredUser = ""
+			state.deferredUser = core.ExternalConversationEvent{}
 		case "user_message":
-			content := strings.TrimSpace(rollout.Payload.Message)
 			clientID := strings.TrimSpace(rollout.Payload.ClientID)
 			if state.turnID == "" && clientID == "" {
 				state.unsafeTurn = true
 				state.externalTurn = false
 				state.deferredTurn = false
-				state.deferredUser = ""
+				state.deferredUser = core.ExternalConversationEvent{}
 				recordCompatibilityChange(a.compatibility.incompatibleState("unsafe_turn_identity"))
 				continue
 			}
@@ -454,14 +461,15 @@ func (a *Agent) PollExternalConversation(_ context.Context, sessionID string) ([
 				state.externalTurn = false
 				continue
 			}
+			userEvent := desktopUserEvent(sessionID, rollout.Payload.Message, rollout.Payload.LocalImages)
 			if clientID == "" && pending {
 				state.deferredTurn = true
-				state.deferredUser = content
+				state.deferredUser = userEvent
 				continue
 			}
 			state.externalTurn = true
-			if content != "" {
-				events = append(events, core.ExternalConversationEvent{SessionID: sessionID, Role: "user", Content: content})
+			if desktopEventHasContent(userEvent) {
+				events = append(events, userEvent)
 			}
 		case "task_complete":
 			assistant := strings.TrimSpace(rollout.Payload.LastAgentMessage)
@@ -485,7 +493,7 @@ func (a *Agent) PollExternalConversation(_ context.Context, sessionID string) ([
 				}
 				state.turnID = ""
 				state.deferredTurn = false
-				state.deferredUser = ""
+				state.deferredUser = core.ExternalConversationEvent{}
 				state.sawTaskStarted = false
 				state.sawUserMessage = false
 				if supportedSequence {
@@ -546,14 +554,171 @@ func (a *Agent) resolveDeferredDesktopTurns(sessionID string, state *desktopPoll
 	return events
 }
 
-func appendDesktopTurnEvents(events []core.ExternalConversationEvent, sessionID, user, assistant string) []core.ExternalConversationEvent {
-	if user = strings.TrimSpace(user); user != "" {
-		events = append(events, core.ExternalConversationEvent{SessionID: sessionID, Role: "user", Content: user})
+func appendDesktopTurnEvents(events []core.ExternalConversationEvent, sessionID string, user core.ExternalConversationEvent, assistant string) []core.ExternalConversationEvent {
+	user.SessionID = sessionID
+	user.Role = "user"
+	user.Content = strings.TrimSpace(user.Content)
+	if desktopEventHasContent(user) {
+		events = append(events, user)
 	}
 	if assistant = strings.TrimSpace(assistant); assistant != "" {
 		events = append(events, core.ExternalConversationEvent{SessionID: sessionID, Role: "assistant", Content: assistant})
 	}
 	return events
+}
+
+func desktopEventHasContent(event core.ExternalConversationEvent) bool {
+	return strings.TrimSpace(event.Content) != "" || len(event.Images) > 0 || len(event.Files) > 0
+}
+
+func desktopUserEvent(sessionID, message string, localImages []string) core.ExternalConversationEvent {
+	event := core.ExternalConversationEvent{SessionID: sessionID, Role: "user"}
+	imagePaths := make(map[string]struct{}, len(localImages))
+	for _, path := range localImages {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		imagePaths[path] = struct{}{}
+		attachment, ok := loadDesktopImage(path)
+		if ok {
+			event.Images = append(event.Images, attachment)
+		}
+	}
+	event.Content, event.Files = parseDesktopFileMentions(message, imagePaths)
+	event.Content = strings.TrimSpace(event.Content)
+	return event
+}
+
+type desktopFileReference struct {
+	name string
+	path string
+}
+
+func parseDesktopFileMentions(message string, excludedPaths map[string]struct{}) (string, []core.FileAttachment) {
+	content, references, ok := splitDesktopFileMentionBlock(message)
+	if !ok {
+		return strings.TrimSpace(message), nil
+	}
+	files := make([]core.FileAttachment, 0, len(references))
+	for _, reference := range references {
+		if _, excluded := excludedPaths[reference.path]; excluded {
+			continue
+		}
+		attachment, loaded := loadDesktopFile(reference.path, reference.name)
+		if loaded {
+			files = append(files, attachment)
+		}
+	}
+	return strings.TrimSpace(content), files
+}
+
+func splitDesktopFileMentionBlock(message string) (string, []desktopFileReference, bool) {
+	lines := strings.Split(message, "\n")
+	start := 0
+	for start < len(lines) && lines[start] == "" {
+		start++
+	}
+	if start >= len(lines) || lines[start] != "# Files mentioned by the user:" {
+		return message, nil, false
+	}
+	pos := start + 1
+	if pos >= len(lines) || lines[pos] != "" {
+		return message, nil, false
+	}
+	pos++
+
+	var references []desktopFileReference
+	end := pos
+	for pos < len(lines) {
+		match := desktopFileEntryPattern.FindStringSubmatch(lines[pos])
+		if match == nil {
+			break
+		}
+		name, path := match[1], match[2]
+		if filepath.Base(path) != name || !filepath.IsAbs(path) {
+			// This is still a machine-shaped block, so remove the local path
+			// from relayed text, but do not read it.
+			references = append(references, desktopFileReference{name: name, path: ""})
+		} else {
+			references = append(references, desktopFileReference{name: name, path: path})
+		}
+		pos++
+		end = pos
+		if pos < len(lines) && lines[pos] == "" {
+			pos++
+			end = pos
+		}
+	}
+	if len(references) == 0 {
+		return message, nil, false
+	}
+
+	remaining := append([]string(nil), lines[end:]...)
+	for i, line := range remaining {
+		if line == "## My request for Codex:" {
+			remaining = append(remaining[:i], remaining[i+1:]...)
+			break
+		}
+	}
+	for i := range references {
+		if references[i].path == "" {
+			references[i].name = ""
+		}
+	}
+	return strings.Join(remaining, "\n"), references, true
+}
+
+func loadDesktopImage(path string) (core.ImageAttachment, bool) {
+	data, name, mimeType, ok := readDesktopAttachment(path)
+	if !ok || !strings.HasPrefix(mimeType, "image/") {
+		return core.ImageAttachment{}, false
+	}
+	return core.ImageAttachment{MimeType: mimeType, Data: data, FileName: name}, true
+}
+
+func loadDesktopFile(path, expectedName string) (core.FileAttachment, bool) {
+	if path == "" || filepath.Base(path) != expectedName {
+		return core.FileAttachment{}, false
+	}
+	data, name, mimeType, ok := readDesktopAttachment(path)
+	if !ok {
+		return core.FileAttachment{}, false
+	}
+	return core.FileAttachment{MimeType: mimeType, Data: data, FileName: name}, true
+}
+
+func readDesktopAttachment(path string) ([]byte, string, string, bool) {
+	if !filepath.IsAbs(path) {
+		return nil, "", "", false
+	}
+	before, err := os.Lstat(path)
+	if err != nil || !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 ||
+		before.Size() < 0 || before.Size() > desktopAttachmentMaxBytes {
+		return nil, "", "", false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, "", "", false
+	}
+	defer file.Close()
+	after, err := file.Stat()
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) ||
+		after.Size() < 0 || after.Size() > desktopAttachmentMaxBytes {
+		return nil, "", "", false
+	}
+	data, err := io.ReadAll(io.LimitReader(file, desktopAttachmentMaxBytes+1))
+	if err != nil || int64(len(data)) > desktopAttachmentMaxBytes {
+		return nil, "", "", false
+	}
+	name := filepath.Base(path)
+	mimeType := http.DetectContentType(data)
+	if mimeType == "application/octet-stream" {
+		if byExtension := mime.TypeByExtension(filepath.Ext(name)); byExtension != "" {
+			mimeType = byExtension
+		}
+	}
+	return data, name, mimeType, true
 }
 
 func findDesktopTranscript(sessionID, codexHome string) (string, error) {

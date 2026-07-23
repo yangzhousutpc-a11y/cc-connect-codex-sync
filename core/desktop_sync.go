@@ -82,7 +82,7 @@ func (e *Engine) restoreDesktopLiveSyncWorkspaces() {
 		}
 		workspaces[workspace] = struct{}{}
 		if _, _, err := e.getOrCreateWorkspaceAgent(workspace); err != nil {
-			slog.Warn("desktop live sync workspace restore failed", "workspace", workspace, "error", err)
+			slog.Warn("desktop live sync workspace restore failed")
 		}
 	}
 }
@@ -108,7 +108,7 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 			var err error
 			events, err = poller.PollExternalConversation(ctx, sessionID)
 			if err != nil {
-				slog.Warn("desktop live sync poll failed", "session_id", sessionID, "error", err)
+				slog.Warn("desktop live sync poll failed")
 				continue
 			}
 			if len(events) > 0 {
@@ -123,36 +123,103 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 		}
 		replyCtx, err := reconstructor.ReconstructReplyCtx(sessionKey)
 		if err != nil {
-			slog.Warn("desktop live sync reply context failed", "session", sessionKey, "error", err)
+			slog.Warn("desktop live sync reply context failed")
 			continue
 		}
 
-		for i, event := range events {
+	eventLoop:
+		for i := range events {
 			// The active session may have changed while PollExternalConversation
 			// was reading the transcript. Never send using a stale route snapshot.
 			if e.externalConversationRoutes(sessions.AgentSessionRoutes())[sessionID] != sessionKey {
 				delete(e.desktopSyncPending, pendingKey)
 				break
 			}
+			event := &events[i]
 			content := strings.TrimSpace(event.Content)
-			if content == "" {
+			imageCount, fileCount := len(event.Images), len(event.Files)
+			if content == "" && len(event.Images) == 0 && len(event.Files) == 0 {
 				e.desktopSyncPending[pendingKey] = events[i+1:]
 				continue
 			}
-			prefix := "✣ Codex · 回复\n"
-			if event.Role == "user" {
-				prefix = "✣ Codex App · 你\n"
-			}
-			if err := e.sendWithError(platform, replyCtx, prefix+content); err != nil {
-				slog.Warn("desktop live sync send failed", "session", sessionKey, "role", event.Role, "error", err)
+
+			if content != "" {
+				prefix := "✣ Codex · 回复\n"
+				if event.Role == "user" {
+					prefix = "✣ Codex App · 你\n"
+				}
+				if err := e.sendWithError(platform, replyCtx, prefix+content); err != nil {
+					slog.Warn("desktop live sync send failed", "role", event.Role, "stage", "text")
+					e.desktopSyncPending[pendingKey] = events[i:]
+					break
+				}
+				event.Content = ""
 				e.desktopSyncPending[pendingKey] = events[i:]
-				break
 			}
+
+			if !e.attachmentSendEnabled {
+				event.Images = nil
+				event.Files = nil
+			} else {
+				imageSender, imageSupported := platform.(ImageSender)
+				if !imageSupported {
+					event.Images = nil
+				}
+				for len(event.Images) > 0 {
+					if e.externalConversationRoutes(sessions.AgentSessionRoutes())[sessionID] != sessionKey {
+						delete(e.desktopSyncPending, pendingKey)
+						break eventLoop
+					}
+					if err := e.waitOutgoing(platform); err != nil {
+						slog.Warn("desktop live sync send failed", "role", event.Role, "stage", "image")
+						e.desktopSyncPending[pendingKey] = events[i:]
+						break
+					}
+					if err := imageSender.SendImage(e.ctx, replyCtx, event.Images[0]); err != nil {
+						slog.Warn("desktop live sync send failed", "role", event.Role, "stage", "image")
+						e.desktopSyncPending[pendingKey] = events[i:]
+						break
+					}
+					event.Images = event.Images[1:]
+					e.desktopSyncPending[pendingKey] = events[i:]
+				}
+				if len(event.Images) > 0 {
+					break
+				}
+
+				fileSender, fileSupported := platform.(FileSender)
+				if !fileSupported {
+					event.Files = nil
+				}
+				for len(event.Files) > 0 {
+					if e.externalConversationRoutes(sessions.AgentSessionRoutes())[sessionID] != sessionKey {
+						delete(e.desktopSyncPending, pendingKey)
+						break eventLoop
+					}
+					if err := e.waitOutgoing(platform); err != nil {
+						slog.Warn("desktop live sync send failed", "role", event.Role, "stage", "file")
+						e.desktopSyncPending[pendingKey] = events[i:]
+						break
+					}
+					if err := fileSender.SendFile(e.ctx, replyCtx, event.Files[0]); err != nil {
+						slog.Warn("desktop live sync send failed", "role", event.Role, "stage", "file")
+						e.desktopSyncPending[pendingKey] = events[i:]
+						break
+					}
+					event.Files = event.Files[1:]
+					e.desktopSyncPending[pendingKey] = events[i:]
+				}
+				if len(event.Files) > 0 {
+					break
+				}
+			}
+
 			e.desktopSyncPending[pendingKey] = events[i+1:]
 			slog.Info("desktop live sync sent",
-				"session", sessionKey,
 				"role", event.Role,
 				"content_len", len(content),
+				"image_count", imageCount,
+				"file_count", fileCount,
 			)
 		}
 		if len(e.desktopSyncPending[pendingKey]) == 0 {
