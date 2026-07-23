@@ -217,3 +217,45 @@ func TestRunWeComSubcommandHelpReturnsSuccess(t *testing.T) {
 		})
 	}
 }
+
+func TestRunWeComSetupCompletesConfigInitStagingConfig(t *testing.T) {
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "workspace")
+	if err := os.Mkdir(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	path := filepath.Join(dir, "config.toml")
+	if err := config.InitCodexConfig(path, "staging", workDir); err != nil {
+		t.Fatalf("InitCodexConfig returned error: %v", err)
+	}
+	staging, err := config.LoadPermissive(path)
+	if err != nil {
+		t.Fatalf("LoadPermissive staging config: %v", err)
+	}
+	if got := len(staging.Projects[0].Platforms); got != 0 {
+		t.Fatalf("staging platform count = %d, want 0", got)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = runWeComCommand([]string{
+		"setup",
+		"--config", path,
+		"--project", "staging",
+		"--bot-id", "bot-1234",
+		"--bot-secret", "secret",
+	}, &stdout, &stderr, nil, nil)
+	if err != nil {
+		t.Fatalf("runWeComCommand returned error: %v, stderr=%s", err, stderr.String())
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("strict Load after setup: %v", err)
+	}
+	if got := len(cfg.Projects[0].Platforms); got != 1 {
+		t.Fatalf("platform count after setup = %d, want 1", got)
+	}
+	if cfg.Projects[0].Platforms[0].Type != "wecom" {
+		t.Fatalf("platform type = %q, want wecom", cfg.Projects[0].Platforms[0].Type)
+	}
+}

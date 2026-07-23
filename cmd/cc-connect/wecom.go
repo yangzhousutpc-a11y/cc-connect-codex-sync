@@ -135,7 +135,7 @@ func validateWeComSetupPlatformIndex(projectName string, platformIndex int) erro
 	if platformIndex < 0 {
 		return fmt.Errorf("platform index must be >= 0")
 	}
-	cfg, err := config.Load(config.ConfigPath)
+	cfg, err := config.LoadPermissive(config.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
