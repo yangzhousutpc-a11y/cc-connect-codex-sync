@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -57,9 +56,10 @@ type desktopRolloutEvent struct {
 	} `json:"payload"`
 }
 
-const desktopAttachmentMaxBytes int64 = 20 << 20
-
-var desktopFileEntryPattern = regexp.MustCompile(`^## ([^:\r\n]+): (/[^\r\n]+)$`)
+const (
+	desktopAttachmentMaxBytes int64 = 20 << 20
+	desktopImageMaxCount            = 10
+)
 
 var desktopAttachmentOpen = openDesktopAttachmentNoFollow
 
@@ -583,12 +583,20 @@ func desktopEventHasContent(event core.ExternalConversationEvent) bool {
 
 func materializeDesktopUserEvent(sessionID string, raw desktopRawUserEvent) core.ExternalConversationEvent {
 	event := core.ExternalConversationEvent{SessionID: sessionID, Role: "user"}
-	for _, path := range raw.localImages {
+	remainingBytes := desktopAttachmentMaxBytes
+	for i, path := range raw.localImages {
+		if i >= desktopImageMaxCount || remainingBytes <= 0 {
+			break
+		}
 		path = strings.TrimSpace(path)
 		if path == "" {
 			continue
 		}
-		attachment, ok := loadDesktopImage(path)
+		attachment, consumed, ok, exhausted := loadDesktopImageWithinBudget(path, remainingBytes)
+		if exhausted {
+			break
+		}
+		remainingBytes -= consumed
 		if ok {
 			event.Images = append(event.Images, attachment)
 		}
@@ -614,14 +622,7 @@ func sanitizeDesktopFileMentions(message string) string {
 			return joinDesktopSafeSections(lines[:start], lines[i+1:])
 		}
 	}
-	safe := append([]string(nil), lines[:start]...)
-	for _, line := range lines[start+1:] {
-		if desktopFileEntryPattern.MatchString(line) {
-			continue
-		}
-		safe = append(safe, line)
-	}
-	return strings.TrimSpace(strings.Join(safe, "\n"))
+	return strings.TrimSpace(strings.Join(lines[:start], "\n"))
 }
 
 func joinDesktopSafeSections(prefix, suffix []string) string {
@@ -638,30 +639,38 @@ func joinDesktopSafeSections(prefix, suffix []string) string {
 }
 
 func loadDesktopImage(path string) (core.ImageAttachment, bool) {
-	data, name, mimeType, ok := readDesktopAttachment(path)
-	if !ok || !strings.HasPrefix(mimeType, "image/") {
-		return core.ImageAttachment{}, false
-	}
-	return core.ImageAttachment{MimeType: mimeType, Data: data, FileName: name}, true
+	attachment, _, ok, _ := loadDesktopImageWithinBudget(path, desktopAttachmentMaxBytes)
+	return attachment, ok
 }
 
-func readDesktopAttachment(path string) ([]byte, string, string, bool) {
-	if !filepath.IsAbs(path) {
-		return nil, "", "", false
+func loadDesktopImageWithinBudget(path string, maxBytes int64) (core.ImageAttachment, int64, bool, bool) {
+	data, name, mimeType, consumed, ok, exhausted := readDesktopAttachment(path, maxBytes)
+	if !ok || !strings.HasPrefix(mimeType, "image/") {
+		return core.ImageAttachment{}, consumed, false, exhausted
+	}
+	return core.ImageAttachment{MimeType: mimeType, Data: data, FileName: name}, consumed, true, false
+}
+
+func readDesktopAttachment(path string, maxBytes int64) ([]byte, string, string, int64, bool, bool) {
+	if !filepath.IsAbs(path) || maxBytes <= 0 {
+		return nil, "", "", 0, false, maxBytes <= 0
 	}
 	file, err := desktopAttachmentOpen(path)
 	if err != nil {
-		return nil, "", "", false
+		return nil, "", "", 0, false, false
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() ||
-		info.Size() < 0 || info.Size() > desktopAttachmentMaxBytes {
-		return nil, "", "", false
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 0 {
+		return nil, "", "", 0, false, false
 	}
-	data, err := io.ReadAll(io.LimitReader(file, desktopAttachmentMaxBytes+1))
-	if err != nil || int64(len(data)) > desktopAttachmentMaxBytes {
-		return nil, "", "", false
+	if info.Size() > maxBytes || info.Size() > desktopAttachmentMaxBytes {
+		return nil, "", "", 0, false, true
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	consumed := int64(len(data))
+	if err != nil || consumed > maxBytes || consumed > desktopAttachmentMaxBytes {
+		return nil, "", "", consumed, false, consumed > maxBytes
 	}
 	name := filepath.Base(path)
 	mimeType := http.DetectContentType(data)
@@ -670,7 +679,7 @@ func readDesktopAttachment(path string) ([]byte, string, string, bool) {
 			mimeType = byExtension
 		}
 	}
-	return data, name, mimeType, true
+	return data, name, mimeType, consumed, true, false
 }
 
 func openDesktopAttachmentNoFollow(path string) (*os.File, error) {

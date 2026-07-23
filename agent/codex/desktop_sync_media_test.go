@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -84,6 +85,55 @@ func TestDesktopLocalImagesRejectUnsafePaths(t *testing.T) {
 	}
 	if event.Content != "safe body" {
 		t.Fatalf("content = %q, want safe body preserved", event.Content)
+	}
+}
+
+func TestDesktopLocalImagesStopAtPerEventCountLimit(t *testing.T) {
+	const wantMaxImages = 10
+	paths := make([]string, 0, wantMaxImages+2)
+	for i := 0; i < wantMaxImages+2; i++ {
+		paths = append(paths, writeDesktopMediaFile(t, fmt.Sprintf("image-%02d.png", i), []byte("\x89PNG\r\n\x1a\nimage")))
+	}
+	openCount := observeDesktopAttachmentOpens(t)
+	event := materializeDesktopUserEvent("thread-image-count", desktopRawUserEvent{localImages: paths})
+	if got := len(event.Images); got != wantMaxImages {
+		t.Fatalf("images = %d, want fixed per-event limit %d", got, wantMaxImages)
+	}
+	if got := openCount(); got != wantMaxImages {
+		t.Fatalf("attachment opens = %d, want no opens after count limit", got)
+	}
+}
+
+func TestDesktopLocalImagesStopOpeningAfterCumulativeBudgetIsExhausted(t *testing.T) {
+	first := writeSizedDesktopPNG(t, "first.png", desktopAttachmentMaxBytes/2)
+	second := writeSizedDesktopPNG(t, "second.png", desktopAttachmentMaxBytes/2)
+	third := writeDesktopMediaFile(t, "must-not-open.png", []byte("\x89PNG\r\n\x1a\nimage"))
+	openCount := observeDesktopAttachmentOpens(t)
+
+	event := materializeDesktopUserEvent("thread-image-budget", desktopRawUserEvent{
+		message:     "safe body",
+		localImages: []string{first, second, third},
+	})
+	if got := len(event.Images); got != 2 {
+		t.Fatalf("images = %d, want two images within cumulative budget", got)
+	}
+	if got := openCount(); got != 2 {
+		t.Fatalf("attachment opens = %d, want later paths unopened after budget exhaustion", got)
+	}
+	if event.Content != "safe body" {
+		t.Fatal("budget exhaustion discarded safe body")
+	}
+}
+
+func TestDesktopLocalImageAllowsSingleImageAtExactBudgetBoundary(t *testing.T) {
+	path := writeSizedDesktopPNG(t, "boundary.png", desktopAttachmentMaxBytes)
+	openCount := observeDesktopAttachmentOpens(t)
+	event := materializeDesktopUserEvent("thread-image-boundary", desktopRawUserEvent{localImages: []string{path}})
+	if len(event.Images) != 1 {
+		t.Fatal("single image at exact cumulative boundary was rejected")
+	}
+	if got := openCount(); got != 1 {
+		t.Fatalf("attachment opens = %d, want one", got)
 	}
 }
 
@@ -195,6 +245,47 @@ func TestDesktopFileBlocksAreSanitizedWithoutReadingAnyPaths(t *testing.T) {
 	}
 }
 
+func TestDesktopIncompleteFileBlocksFailClosedWithoutLeakingPaths(t *testing.T) {
+	secretPath := filepath.Join(t.TempDir(), "private.txt")
+	tests := []struct {
+		name    string
+		message string
+		want    string
+	}{
+		{
+			name:    "filename contains colon",
+			message: "safe prefix\n# Files mentioned by the user:\n\n## report:final.txt: " + secretPath,
+			want:    "safe prefix",
+		},
+		{
+			name:    "slightly malformed entry",
+			message: "safe prefix\n# Files mentioned by the user:\nfile => " + secretPath + "\nunsafe trailing text",
+			want:    "safe prefix",
+		},
+		{
+			name:    "marker only",
+			message: "safe prefix\n# Files mentioned by the user:\n" + secretPath,
+			want:    "safe prefix",
+		},
+		{
+			name:    "no safe prefix",
+			message: "# Files mentioned by the user:\n\n## private.txt: " + secretPath,
+			want:    "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeDesktopFileMentions(tt.message)
+			if got != tt.want {
+				t.Fatal("incomplete file block did not fail closed")
+			}
+			if strings.Contains(got, secretPath) {
+				t.Fatal("incomplete file block leaked an absolute path")
+			}
+		})
+	}
+}
+
 func TestDesktopImageOpenRejectsSymlinkReplacementRace(t *testing.T) {
 	path := writeDesktopMediaFile(t, "race.png", []byte("\x89PNG\r\n\x1a\noriginal"))
 	target := writeDesktopMediaFile(t, "target.png", []byte("\x89PNG\r\n\x1a\ntarget"))
@@ -246,6 +337,27 @@ func writeDesktopMediaFile(t *testing.T, name string, data []byte) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeSizedDesktopPNG(t *testing.T, name string, size int64) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("\x89PNG\r\n\x1a\n")); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Truncate(size); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return path
