@@ -47,6 +47,9 @@ func TestRunWeComSetupSavesCredentialsWithoutPrintingSecret(t *testing.T) {
 		"--bot-secret", secret,
 		"--allow-from", "zhangsan,lisi",
 	}, &stdout, &stderr, func() (string, error) {
+		t.Fatal("bot ID reader should not be called when --bot-id is set")
+		return "", nil
+	}, func() (string, error) {
 		t.Fatal("password reader should not be called when --bot-secret is set")
 		return "", nil
 	})
@@ -102,6 +105,9 @@ func TestRunWeComBindReadsMissingSecretWithoutEchoingIt(t *testing.T) {
 		"--project", "alpha",
 		"--bot-id", "bot-abcd",
 	}, &stdout, &stderr, func() (string, error) {
+		t.Fatal("bot ID reader should not be called when --bot-id is set")
+		return "", nil
+	}, func() (string, error) {
 		readCalls++
 		return secret, nil
 	})
@@ -127,8 +133,87 @@ func TestRunWeComCommandRejectsEmptyCredentials(t *testing.T) {
 		"--bot-id", " ",
 	}, &stdout, &stderr, func() (string, error) {
 		return "", nil
+	}, func() (string, error) {
+		return "", nil
 	})
 	if err == nil {
 		t.Fatal("runWeComCommand returned nil error for empty credentials")
+	}
+}
+
+func TestRunWeComSetupPromptsForBotIDAndSecretWhenOmitted(t *testing.T) {
+	path := writeWeComCLIConfig(t)
+	var stdout, stderr bytes.Buffer
+	botID := "interactive-bot-9876"
+	secret := "interactive-secret"
+	botIDCalls := 0
+	secretCalls := 0
+
+	err := runWeComCommand([]string{
+		"setup",
+		"--config", path,
+		"--project", "alpha",
+	}, &stdout, &stderr, func() (string, error) {
+		botIDCalls++
+		return botID, nil
+	}, func() (string, error) {
+		secretCalls++
+		return secret, nil
+	})
+	if err != nil {
+		t.Fatalf("runWeComCommand returned error: %v", err)
+	}
+	if botIDCalls != 1 || secretCalls != 1 {
+		t.Fatalf("reader calls = (%d, %d), want (1, 1)", botIDCalls, secretCalls)
+	}
+	output := stdout.String() + stderr.String()
+	if strings.Contains(output, botID) || strings.Contains(output, secret) {
+		t.Fatalf("interactive credentials leaked in output: %q", output)
+	}
+	if !strings.Contains(output, "9876") {
+		t.Fatalf("output missing Bot ID suffix: %q", output)
+	}
+}
+
+func TestRunWeComSetupInvalidPlatformIndexDoesNotModifyConfig(t *testing.T) {
+	path := writeWeComCLIConfig(t)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config before command: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	err = runWeComCommand([]string{
+		"setup",
+		"--config", path,
+		"--project", "alpha",
+		"--platform-index", "2",
+		"--bot-id", "bot-abcd",
+		"--bot-secret", "secret",
+	}, &stdout, &stderr, nil, nil)
+	if err == nil {
+		t.Fatal("runWeComCommand returned nil error for invalid platform index")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config after command: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("invalid platform index modified config\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestRunWeComSubcommandHelpReturnsSuccess(t *testing.T) {
+	for _, command := range []string{"setup", "bind"} {
+		t.Run(command, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := runWeComCommand([]string{command, "--help"}, &stdout, &stderr, nil, nil)
+			if err != nil {
+				t.Fatalf("runWeComCommand returned error for --help: %v", err)
+			}
+			if strings.Contains(stderr.String(), "Error:") {
+				t.Fatalf("--help output contains error prefix: %q", stderr.String())
+			}
+		})
 	}
 }

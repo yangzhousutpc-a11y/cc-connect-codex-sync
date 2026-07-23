@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,7 +16,11 @@ import (
 type weComSecretReader func() (string, error)
 
 func runWeCom(args []string) {
+	stdin := bufio.NewReader(os.Stdin)
 	err := runWeComCommand(args, os.Stdout, os.Stderr, func() (string, error) {
+		value, err := stdin.ReadString('\n')
+		return value, err
+	}, func() (string, error) {
 		value, err := term.ReadPassword(int(os.Stdin.Fd()))
 		return string(value), err
 	})
@@ -24,7 +30,7 @@ func runWeCom(args []string) {
 	}
 }
 
-func runWeComCommand(args []string, stdout, stderr io.Writer, readSecret weComSecretReader) error {
+func runWeComCommand(args []string, stdout, stderr io.Writer, readBotID, readSecret weComSecretReader) error {
 	if len(args) == 0 {
 		printWeComUsage(stdout)
 		return nil
@@ -34,13 +40,13 @@ func runWeComCommand(args []string, stdout, stderr io.Writer, readSecret weComSe
 		printWeComUsage(stdout)
 		return nil
 	case "setup", "bind":
-		return runWeComSetup(args[0], args[1:], stdout, stderr, readSecret)
+		return runWeComSetup(args[0], args[1:], stdout, stderr, readBotID, readSecret)
 	default:
 		return fmt.Errorf("unknown wecom subcommand %q", args[0])
 	}
 }
 
-func runWeComSetup(command string, args []string, stdout, stderr io.Writer, readSecret weComSecretReader) error {
+func runWeComSetup(command string, args []string, stdout, stderr io.Writer, readBotID, readSecret weComSecretReader) error {
 	fs := flag.NewFlagSet("wecom "+command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configFile := fs.String("config", "", "path to config file")
@@ -50,6 +56,9 @@ func runWeComSetup(command string, args []string, stdout, stderr io.Writer, read
 	botSecret := fs.String("bot-secret", "", "Enterprise WeChat intelligent-bot secret")
 	allowFrom := fs.String("allow-from", "", "optional comma-separated allowed user IDs")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 
@@ -59,7 +68,18 @@ func runWeComSetup(command string, args []string, stdout, stderr io.Writer, read
 	}
 	id := strings.TrimSpace(*botID)
 	if id == "" {
-		return fmt.Errorf("--bot-id is required")
+		if readBotID == nil {
+			return fmt.Errorf("--bot-id is required")
+		}
+		fmt.Fprint(stderr, "Bot ID: ")
+		value, err := readBotID()
+		if err != nil {
+			return fmt.Errorf("read bot ID: %w", err)
+		}
+		id = strings.TrimSpace(value)
+	}
+	if id == "" {
+		return fmt.Errorf("bot ID is required")
 	}
 	secret := strings.TrimSpace(*botSecret)
 	if secret == "" {
@@ -79,6 +99,9 @@ func runWeComSetup(command string, args []string, stdout, stderr io.Writer, read
 	}
 
 	initConfigPath(*configFile)
+	if err := validateWeComSetupPlatformIndex(projectName, *platformIndex); err != nil {
+		return err
+	}
 	workDir, _ := os.Getwd()
 	provisioned, err := config.EnsureProjectWithWeComPlatform(config.EnsureProjectWithWeComOptions{
 		ProjectName: projectName,
@@ -105,6 +128,40 @@ func runWeComSetup(command string, args []string, stdout, stderr io.Writer, read
 	}
 	fmt.Fprintf(stdout, "✅ 企业微信智能机器人已配置：项目 %q，Bot ID 尾号 %s。\n", saved.ProjectName, botIDSuffix(id))
 	fmt.Fprintln(stdout, "下一步：重启服务，并在企业微信群中 @机器人 发送第一条消息。")
+	return nil
+}
+
+func validateWeComSetupPlatformIndex(projectName string, platformIndex int) error {
+	if platformIndex < 0 {
+		return fmt.Errorf("platform index must be >= 0")
+	}
+	cfg, err := config.Load(config.ConfigPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	count := 0
+	foundProject := false
+	for i := range cfg.Projects {
+		if cfg.Projects[i].Name != projectName {
+			continue
+		}
+		foundProject = true
+		for j := range cfg.Projects[i].Platforms {
+			if strings.EqualFold(strings.TrimSpace(cfg.Projects[i].Platforms[j].Type), "wecom") {
+				count++
+			}
+		}
+		break
+	}
+	if !foundProject || count == 0 {
+		count = 1
+	}
+	if platformIndex > count {
+		return fmt.Errorf(
+			"platform index %d out of range: project %q has %d wecom platform(s)",
+			platformIndex, projectName, count,
+		)
+	}
 	return nil
 }
 
