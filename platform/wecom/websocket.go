@@ -60,14 +60,20 @@ type Platform struct {
 	handler          core.MessageHandler
 	lifecycleHandler core.PlatformLifecycleHandler
 
-	reqSeq atomic.Uint64
-	dedup  core.MessageDedup
+	reqSeq     atomic.Uint64
+	dedup      core.MessageDedup
+	missedPong atomic.Int32
 
 	pendingMu   sync.Mutex
 	pendingAcks map[string]chan ackResult
 
 	inboundMu         sync.Mutex
-	inboundAdmissions map[string]chan struct{}
+	inboundAdmissions map[string]inboundBarrier
+}
+
+type inboundBarrier struct {
+	admission   <-chan struct{}
+	handlerDone <-chan struct{}
 }
 
 type replyContext struct {
@@ -149,7 +155,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		maxMessageBytes:   defaultMaxMessageBytes,
 		done:              make(chan struct{}),
 		pendingAcks:       make(map[string]chan ackResult),
-		inboundAdmissions: make(map[string]chan struct{}),
+		inboundAdmissions: make(map[string]inboundBarrier),
 	}, nil
 }
 
@@ -248,6 +254,12 @@ func (p *Platform) runConnection() error {
 	if err := conn.ReadJSON(&response); err != nil {
 		return fmt.Errorf("wecom: read subscribe response: %w", err)
 	}
+	if response.Headers.ReqID != subscribeID {
+		return fmt.Errorf(
+			"wecom: subscribe response req_id=%q, want %q",
+			response.Headers.ReqID, subscribeID,
+		)
+	}
 	if response.ErrCode == nil {
 		return errors.New("wecom: subscribe response omitted errcode")
 	}
@@ -260,6 +272,7 @@ func (p *Platform) runConnection() error {
 	if p.lifecycleHandler != nil {
 		p.lifecycleHandler.OnPlatformReady(p)
 	}
+	p.missedPong.Store(0)
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(p.ctx)
 	defer cancelHeartbeat()
 	go p.heartbeat(heartbeatCtx, conn)
@@ -281,6 +294,11 @@ func (p *Platform) heartbeat(ctx context.Context, conn *websocket.Conn) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if p.missedPong.Load() >= 2 {
+				_ = conn.Close()
+				return
+			}
+			p.missedPong.Add(1)
 			if err := p.writeJSONTo(conn, map[string]any{
 				"cmd":     "ping",
 				"headers": map[string]string{"req_id": p.nextRequestID("ping")},
@@ -301,7 +319,11 @@ func (p *Platform) handleFrame(frame wsFrame) {
 		return
 	}
 	reqID := frame.Headers.ReqID
-	if strings.HasPrefix(reqID, "ping_") || strings.HasPrefix(reqID, "aibot_subscribe_") {
+	if strings.HasPrefix(reqID, "ping_") {
+		p.missedPong.Store(0)
+		return
+	}
+	if strings.HasPrefix(reqID, "aibot_subscribe_") {
 		return
 	}
 	var err error
@@ -416,9 +438,14 @@ func shortID(id string) string {
 }
 
 func (p *Platform) admitInbound(sessionKey string, message *core.Message) {
+	handlerDone := make(chan struct{})
+	current := inboundBarrier{
+		admission:   message.DispatchAdmission,
+		handlerDone: handlerDone,
+	}
 	p.inboundMu.Lock()
 	previous := p.inboundAdmissions[sessionKey]
-	p.inboundAdmissions[sessionKey] = message.DispatchAdmission
+	p.inboundAdmissions[sessionKey] = current
 	p.inboundMu.Unlock()
 
 	ctx := p.ctx
@@ -426,26 +453,33 @@ func (p *Platform) admitInbound(sessionKey string, message *core.Message) {
 		ctx = context.Background()
 	}
 	go func() {
-		if previous != nil {
+		if previous.admission != nil || previous.handlerDone != nil {
 			select {
-			case <-previous:
+			case <-previous.admission:
+			case <-previous.handlerDone:
 			case <-ctx.Done():
 				return
 			}
 		}
+		defer close(handlerDone)
 		p.handler(p, message)
 	}()
 	go func() {
 		select {
 		case <-message.DispatchAdmission:
+		case <-handlerDone:
 		case <-ctx.Done():
 		}
 		p.inboundMu.Lock()
-		if p.inboundAdmissions[sessionKey] == message.DispatchAdmission {
+		if barrierEqual(p.inboundAdmissions[sessionKey], current) {
 			delete(p.inboundAdmissions, sessionKey)
 		}
 		p.inboundMu.Unlock()
 	}()
+}
+
+func barrierEqual(left, right inboundBarrier) bool {
+	return left.admission == right.admission && left.handlerDone == right.handlerDone
 }
 
 func (p *Platform) Reply(_ context.Context, value any, content string) error {

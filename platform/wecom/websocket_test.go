@@ -54,6 +54,21 @@ func TestStripMentionAndSplitByBytes(t *testing.T) {
 	if got := stripWeComAtMentions("@bot 第一行\n\n第二行", "bot"); got != "第一行\n\n第二行" {
 		t.Fatalf("stripWeComAtMentions() destroyed Markdown layout: %q", got)
 	}
+	for _, tt := range []struct {
+		input string
+		want  string
+	}{
+		{"@Claude Code /new", "/new"},
+		{"@张三 @Claude Code /list", "/list"},
+		{"@Claude Code !status", "!status"},
+		{"@Claude Code https://example.com", "@Claude Code https://example.com"},
+		{"@Claude Code 1/2 正文", "@Claude Code 1/2 正文"},
+		{"普通正文 /new", "普通正文 /new"},
+	} {
+		if got := stripWeComAtMentions(tt.input, "unrelated-bot-id"); got != tt.want {
+			t.Errorf("stripWeComAtMentions(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
 	input := strings.Repeat("你", 5)
 	parts := splitByBytes(input, 7)
 	if strings.Join(parts, "") != input {
@@ -229,7 +244,7 @@ func newInboundTestPlatform() *Platform {
 		allowFrom:         "*",
 		ctx:               ctx,
 		cancel:            cancel,
-		inboundAdmissions: make(map[string]chan struct{}),
+		inboundAdmissions: make(map[string]inboundBarrier),
 	}
 }
 
@@ -345,6 +360,60 @@ func TestAuthenticationFailureDoesNotRetry(t *testing.T) {
 	}
 }
 
+func TestSubscribeResponseRequestIDMismatchNeverBecomesReady(t *testing.T) {
+	allowSecondAttempt := make(chan struct{})
+	firstResponseSent := make(chan struct{})
+	server := newWSServer(t, func(conn *websocket.Conn, attempt int) {
+		if attempt == 1 {
+			var frame wsFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				t.Errorf("read first subscribe: %v", err)
+				return
+			}
+			if err := conn.WriteJSON(wsFrame{
+				Headers: wsFrameHeaders{ReqID: "different-request"},
+				ErrCode: intPtr(0),
+			}); err != nil {
+				t.Errorf("write mismatched subscribe response: %v", err)
+				return
+			}
+			close(firstResponseSent)
+			return
+		}
+		<-allowSecondAttempt
+		expectSubscribeAndAck(t, conn, 0)
+		<-time.After(100 * time.Millisecond)
+	})
+	defer server.Close()
+
+	p := mustPlatform(t)
+	p.endpoint = wsURL(server.URL)
+	p.backoffWait = noWaitBackoff
+	lifecycle := newLifecycleRecorder()
+	p.SetLifecycleHandler(lifecycle)
+	if err := p.Start(func(core.Platform, *core.Message) {}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Stop() })
+	waitClosed(t, firstResponseSent, "mismatched subscribe response")
+	select {
+	case <-lifecycle.ready:
+		t.Fatal("mismatched subscribe response reported Ready")
+	case <-time.After(30 * time.Millisecond):
+	}
+	select {
+	case err := <-lifecycle.unavailable:
+		if err == nil || !strings.Contains(err.Error(), "req_id") {
+			t.Fatalf("unavailable error = %v, want req_id protocol error", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("protocol error was not reported unavailable")
+	}
+	close(allowSecondAttempt)
+	waitClosed(t, lifecycle.ready, "ready after valid reconnect")
+	_ = p.Stop()
+}
+
 func TestNetworkFailureReconnectsWithExponentialBackoff(t *testing.T) {
 	server := newWSServer(t, func(conn *websocket.Conn, attempt int) {
 		expectSubscribeAndAck(t, conn, 0)
@@ -374,6 +443,95 @@ func TestNetworkFailureReconnectsWithExponentialBackoff(t *testing.T) {
 	}
 	if want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("backoff sequence = %v, want %v", got, want)
+	}
+	_ = p.Stop()
+}
+
+func TestHeartbeatMissingAcknowledgementsReconnects(t *testing.T) {
+	server := newWSServer(t, func(conn *websocket.Conn, attempt int) {
+		expectSubscribeAndAck(t, conn, 0)
+		for {
+			var frame wsFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			// Deliberately keep the socket open without acknowledging ping.
+		}
+	})
+	defer server.Close()
+
+	p := mustPlatform(t)
+	p.endpoint = wsURL(server.URL)
+	p.heartbeatInterval = 5 * time.Millisecond
+	p.backoffWait = noWaitBackoff
+	lifecycle := newLifecycleRecorder()
+	p.SetLifecycleHandler(lifecycle)
+	if err := p.Start(func(core.Platform, *core.Message) {}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Stop() })
+	waitClosed(t, lifecycle.ready, "initial ready")
+	select {
+	case err := <-lifecycle.unavailable:
+		if err == nil {
+			t.Fatal("unavailable error = nil")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing heartbeat ACK did not make connection unavailable")
+	}
+	deadline := time.Now().Add(time.Second)
+	for server.attempts.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := server.attempts.Load(); got < 2 {
+		t.Fatalf("dial attempts = %d, want reconnect", got)
+	}
+	_ = p.Stop()
+}
+
+func TestHeartbeatAcknowledgementsKeepConnectionAvailable(t *testing.T) {
+	pings := make(chan struct{}, 16)
+	server := newWSServer(t, func(conn *websocket.Conn, attempt int) {
+		expectSubscribeAndAck(t, conn, 0)
+		for {
+			var frame wsFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			if frame.Cmd == "ping" {
+				pings <- struct{}{}
+				if err := conn.WriteJSON(wsFrame{Headers: frame.Headers, ErrCode: intPtr(0)}); err != nil {
+					return
+				}
+			}
+		}
+	})
+	defer server.Close()
+
+	p := mustPlatform(t)
+	p.endpoint = wsURL(server.URL)
+	p.heartbeatInterval = 5 * time.Millisecond
+	p.backoffWait = noWaitBackoff
+	lifecycle := newLifecycleRecorder()
+	p.SetLifecycleHandler(lifecycle)
+	if err := p.Start(func(core.Platform, *core.Message) {}); err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, lifecycle.ready, "ready")
+	for range 5 {
+		select {
+		case <-pings:
+		case <-time.After(time.Second):
+			t.Fatal("expected acknowledged heartbeat")
+		}
+	}
+	if got := server.attempts.Load(); got != 1 {
+		t.Fatalf("dial attempts = %d, want 1", got)
+	}
+	select {
+	case err := <-lifecycle.unavailable:
+		t.Fatalf("connection became unavailable despite ACKs: %v", err)
+	default:
 	}
 	_ = p.Stop()
 }
@@ -479,6 +637,27 @@ func TestInboundAdmissionOrdersSameGroupAndAllowsDifferentGroups(t *testing.T) {
 	close(releaseFirst)
 	if got := waitString(t, started); got != "g1-second" {
 		t.Fatalf("same-group second = %q", got)
+	}
+}
+
+func TestInboundAdmissionContinuesWhenPreviousHandlerReturnsWithoutClosingAdmission(t *testing.T) {
+	p := newInboundTestPlatform()
+	started := make(chan string, 2)
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		started <- msg.MessageID
+		if msg.MessageID == "second" {
+			close(msg.DispatchAdmission)
+		}
+		// The first handler intentionally returns without closing admission.
+	}
+
+	p.handleMsgCallback(callbackFrame(t, "r1", callbackBody("first", "group", "group-1", "u1", "text", "first")))
+	if got := waitString(t, started); got != "first" {
+		t.Fatalf("first started = %q", got)
+	}
+	p.handleMsgCallback(callbackFrame(t, "r2", callbackBody("second", "group", "group-1", "u2", "text", "second")))
+	if got := waitString(t, started); got != "second" {
+		t.Fatalf("second started = %q", got)
 	}
 }
 

@@ -2,6 +2,7 @@ package wecom
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -27,6 +28,29 @@ func stripWeComAtMentions(content string, botIDs ...string) string {
 	content = strings.TrimSpace(content)
 	for strings.Contains(content, "  ") {
 		content = strings.ReplaceAll(content, "  ", " ")
+	}
+	return stripLeadingDisplayMentionCommand(content)
+}
+
+// stripLeadingDisplayMentionCommand handles the display-name form emitted by
+// WeCom callbacks. Display names are not bot IDs and may contain spaces, so the
+// first slash-command or bang-command at a token boundary terminates the
+// leading mention prefix.
+func stripLeadingDisplayMentionCommand(content string) string {
+	if content == "" || (!strings.HasPrefix(content, "@") && !strings.HasPrefix(content, "＠")) {
+		return content
+	}
+	for index, r := range content {
+		if r != '/' && r != '!' {
+			continue
+		}
+		if index == 0 {
+			return content
+		}
+		previous, _ := utf8.DecodeLastRuneInString(content[:index])
+		if unicode.IsSpace(previous) {
+			return strings.TrimSpace(content[index:])
+		}
 	}
 	return content
 }
