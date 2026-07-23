@@ -83,21 +83,30 @@ assert_scan_accepts() {
     fail "privacy scan rejected placeholder $name"
 }
 
-assert_scan_rejects secret-plain-double 'bot_secret = "real-secret-value"'
-assert_scan_rejects secret-plain-single "bot_secret = 'real-secret-value'"
-assert_scan_rejects secret-inline-double 'options = { mode = "websocket", bot_secret = "real-secret-value" }'
-assert_scan_rejects secret-inline-single "options = { mode = 'websocket', bot_secret = 'real-secret-value' }"
-assert_scan_rejects bot-id-plain-double 'bot_id = "aib0123456789ABCDEF"'
-assert_scan_rejects bot-id-plain-single "bot_id = 'aib0123456789ABCDEF'"
-assert_scan_rejects bot-id-inline-double 'options = { bot_id = "aib0123456789ABCDEF", mode = "websocket" }'
-assert_scan_rejects bot-id-inline-single "options = { bot_id = 'aib0123456789ABCDEF', mode = 'websocket' }"
+secret_key=bot_secret
+bot_id_key=bot_id
+real_secret=real-secret-value
+real_bot_id=aib0123456789ABCDEF
+secret_placeholder=your-wecom-bot-secret
+secret_env_placeholder='${WECOM_BOT_SECRET}'
+bot_id_placeholder=your-wecom-bot-id
+bot_id_env_placeholder='${WECOM_BOT_ID}'
 
-assert_scan_accepts secret-placeholder-double 'bot_secret = "your-wecom-bot-secret"'
-assert_scan_accepts secret-placeholder-single "bot_secret = '\${WECOM_BOT_SECRET}'"
-assert_scan_accepts secret-placeholder-inline 'options = { bot_secret = "your-wecom-bot-secret" }'
-assert_scan_accepts bot-id-placeholder-double 'bot_id = "your-wecom-bot-id"'
-assert_scan_accepts bot-id-placeholder-single "bot_id = '\${WECOM_BOT_ID}'"
-assert_scan_accepts bot-id-placeholder-inline 'options = { bot_id = "your-wecom-bot-id" }'
+assert_scan_rejects secret-plain-double "$secret_key = \"$real_secret\""
+assert_scan_rejects secret-plain-single "$secret_key = '$real_secret'"
+assert_scan_rejects secret-inline-double "options = { mode = \"websocket\", $secret_key = \"$real_secret\" }"
+assert_scan_rejects secret-inline-single "options = { mode = 'websocket', $secret_key = '$real_secret' }"
+assert_scan_rejects bot-id-plain-double "$bot_id_key = \"$real_bot_id\""
+assert_scan_rejects bot-id-plain-single "$bot_id_key = '$real_bot_id'"
+assert_scan_rejects bot-id-inline-double "options = { $bot_id_key = \"$real_bot_id\", mode = \"websocket\" }"
+assert_scan_rejects bot-id-inline-single "options = { $bot_id_key = '$real_bot_id', mode = 'websocket' }"
+
+assert_scan_accepts secret-placeholder-double "$secret_key = \"$secret_placeholder\""
+assert_scan_accepts secret-placeholder-single "$secret_key = '$secret_env_placeholder'"
+assert_scan_accepts secret-placeholder-inline "options = { $secret_key = \"$secret_placeholder\" }"
+assert_scan_accepts bot-id-placeholder-double "$bot_id_key = \"$bot_id_placeholder\""
+assert_scan_accepts bot-id-placeholder-single "$bot_id_key = '$bot_id_env_placeholder'"
+assert_scan_accepts bot-id-placeholder-inline "options = { $bot_id_key = \"$bot_id_placeholder\" }"
 
 (cd "$first" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) >"$test_root/first.hashes"
 (cd "$second" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256) >"$test_root/second.hashes"
