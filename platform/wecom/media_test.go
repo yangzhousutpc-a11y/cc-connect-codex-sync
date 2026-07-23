@@ -202,6 +202,57 @@ func TestInboundMediaCumulativeBudgetSkipsLaterAttachmentAndKeepsText(t *testing
 	}
 }
 
+func TestInboundMediaBudgetCountsDecryptFailure(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	invalidCiphertext := bytes.Repeat([]byte{'x'}, 32)
+	var hits atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(invalidCiphertext)
+	}))
+	defer server.Close()
+
+	p := &Platform{httpClient: server.Client()}
+	message := &core.Message{}
+	keyText := base64.StdEncoding.EncodeToString(key)
+	body := wsMsgCallbackBody{AibotID: "bot"}
+	p.populateInboundMediaWithinBudget(context.Background(), &body, message, []inboundMediaPart{
+		{kind: "text", text: "keep text"},
+		{kind: "image", ref: wsMediaRef{URL: server.URL + "/invalid", AESKey: keyText}},
+		{kind: "image", ref: wsMediaRef{URL: server.URL + "/must-not-download", AESKey: keyText}},
+	}, int64(len(invalidCiphertext)))
+	if message.Content != "keep text" || len(message.Images) != 0 {
+		t.Fatalf("message = %#v", message)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("download requests = %d, want 1", got)
+	}
+}
+
+func TestInboundMediaBudgetStopsAfterKnownOversize(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(bytes.Repeat([]byte{'x'}, 33))
+	}))
+	defer server.Close()
+
+	p := &Platform{httpClient: server.Client()}
+	message := &core.Message{}
+	body := wsMsgCallbackBody{AibotID: "bot"}
+	p.populateInboundMediaWithinBudget(context.Background(), &body, message, []inboundMediaPart{
+		{kind: "text", text: "keep text"},
+		{kind: "file", ref: wsMediaRef{URL: server.URL + "/oversize", AESKey: validAESKeyForTest()}},
+		{kind: "file", ref: wsMediaRef{URL: server.URL + "/must-not-download", AESKey: validAESKeyForTest()}},
+	}, 32)
+	if message.Content != "keep text" || len(message.Files) != 0 {
+		t.Fatalf("message = %#v", message)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("download requests = %d, want 1", got)
+	}
+}
+
 func TestInboundMixedMediaPreservesFetchOrderAndTextWhenDownloadFails(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	var mu sync.Mutex
