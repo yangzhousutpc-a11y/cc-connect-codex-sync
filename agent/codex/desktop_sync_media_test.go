@@ -152,7 +152,8 @@ func TestPollExternalConversationAllowsDesktopMediaOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Content != "" || len(events[0].Images) != 1 {
+	if len(events) != 2 || events[0].Content != "" || len(events[0].Images) != 1 ||
+		events[0].TurnCompleted || !events[1].TurnCompleted || desktopEventHasContent(events[1]) {
 		t.Fatalf("media-only events = %#v", events)
 	}
 }

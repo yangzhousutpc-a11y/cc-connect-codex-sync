@@ -16,6 +16,189 @@ import (
 	"github.com/yangzhousutpc-a11y/cc-connect-codex-sync/core"
 )
 
+func TestDesktopTaskCompleteMarksAssistantTurnCompleted(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-completed-assistant"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"App request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"App response"}}`,
+	)
+
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "App request"},
+		{SessionID: threadID, Role: "assistant", Content: "App response", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
+func TestDesktopTaskCompleteWithoutAssistantEmitsTurnCompletedMarker(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-completed-empty"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"App request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete"}}`,
+	)
+
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "App request"},
+		{SessionID: threadID, TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
+func TestDesktopTaskCompleteWithCanceledOrErroredTurnEmitsTurnCompletedMarker(t *testing.T) {
+	tests := []struct {
+		name         string
+		taskComplete string
+	}{
+		{
+			name:         "canceled",
+			taskComplete: `{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"Canceled by user.","codex_error_info":null}}}`,
+		},
+		{
+			name:         "errored",
+			taskComplete: `{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"stream disconnected","codex_error_info":null}}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, transcript, threadID := newCompatibilityPollFixture(t)
+			appendTranscript(t, transcript,
+				`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-completed-error"}}`,
+				`{"type":"event_msg","payload":{"type":"user_message","message":"App request"}}`,
+				tt.taskComplete,
+			)
+
+			events, err := a.PollExternalConversation(context.Background(), threadID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []core.ExternalConversationEvent{
+				{SessionID: threadID, Role: "user", Content: "App request"},
+				{SessionID: threadID, TurnCompleted: true},
+			}
+			if !reflect.DeepEqual(events, want) {
+				t.Fatalf("events = %#v, want %#v", events, want)
+			}
+		})
+	}
+}
+
+func TestDesktopTurnCompletedWaitsForTaskCompleteAcrossPolls(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-completed-split"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"App request"}}`,
+	)
+
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "App request"},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events before task_complete = %#v, want %#v", events, want)
+	}
+
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"App response"}}`,
+	)
+	events, err = a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "assistant", Content: "App response", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events after task_complete = %#v, want %#v", events, want)
+	}
+}
+
+func TestDesktopTaskCompleteDoesNotLeakTurnCompletedForInternalTurn(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	a.desktopOrigins.register(threadID, "turn-completed-internal")
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-completed-internal"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"internal request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete"}}`,
+	)
+
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("internal events = %#v, want none", events)
+	}
+}
+
+func TestDesktopDeferredTurnCompletedMatchesResolvedExternalTurn(t *testing.T) {
+	tests := []struct {
+		name         string
+		taskComplete string
+		want         []core.ExternalConversationEvent
+	}{
+		{
+			name:         "assistant response",
+			taskComplete: `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"App response"}}`,
+			want: []core.ExternalConversationEvent{
+				{Role: "user", Content: "App request"},
+				{Role: "assistant", Content: "App response", TurnCompleted: true},
+			},
+		},
+		{
+			name:         "empty assistant",
+			taskComplete: `{"type":"event_msg","payload":{"type":"task_complete"}}`,
+			want: []core.ExternalConversationEvent{
+				{Role: "user", Content: "App request"},
+				{TurnCompleted: true},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, transcript, threadID := newCompatibilityPollFixture(t)
+			ticket := a.desktopOrigins.begin(threadID)
+			appendTranscript(t, transcript,
+				`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-completed-deferred"}}`,
+				`{"type":"event_msg","payload":{"type":"user_message","message":"App request"}}`,
+				tt.taskComplete,
+			)
+			if events, err := a.PollExternalConversation(context.Background(), threadID); err != nil || len(events) != 0 {
+				t.Fatalf("pending events = %#v, %v; want deferred", events, err)
+			}
+
+			a.desktopOrigins.cancel(ticket)
+			events, err := a.PollExternalConversation(context.Background(), threadID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := append([]core.ExternalConversationEvent(nil), tt.want...)
+			for i := range want {
+				want[i].SessionID = threadID
+			}
+			if !reflect.DeepEqual(events, want) {
+				t.Fatalf("resolved events = %#v, want %#v", events, want)
+			}
+		})
+	}
+}
+
 func TestPollExternalConversationOnlyReturnsCodexAppTurns(t *testing.T) {
 	codexHome := t.TempDir()
 	sessionsDir := filepath.Join(codexHome, "sessions", "2026", "07", "21")
@@ -49,7 +232,7 @@ func TestPollExternalConversationOnlyReturnsCodexAppTurns(t *testing.T) {
 	}
 	want := []core.ExternalConversationEvent{
 		{SessionID: threadID, Role: "user", Content: "从 App 发送"},
-		{SessionID: threadID, Role: "assistant", Content: "App 回答"},
+		{SessionID: threadID, Role: "assistant", Content: "App 回答", TurnCompleted: true},
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %#v, want %#v", events, want)
@@ -98,7 +281,7 @@ func TestPollExternalConversationDropsMessagesWrittenWhileRouteInactive(t *testi
 	}
 	want := []core.ExternalConversationEvent{
 		{SessionID: threadID, Role: "user", Content: "active message"},
-		{SessionID: threadID, Role: "assistant", Content: "active answer"},
+		{SessionID: threadID, Role: "assistant", Content: "active answer", TurnCompleted: true},
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("active events = %#v, want %#v", events, want)
@@ -138,7 +321,7 @@ func TestPollExternalConversationDefersAmbiguousAppTurnUntilInternalTurnIDArrive
 	}
 	want := []core.ExternalConversationEvent{
 		{SessionID: threadID, Role: "user", Content: "相同内容"},
-		{SessionID: threadID, Role: "assistant", Content: "App 回答"},
+		{SessionID: threadID, Role: "assistant", Content: "App 回答", TurnCompleted: true},
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("resolved app events = %#v, want %#v", events, want)
@@ -186,7 +369,7 @@ func TestPollExternalConversationReleasesDeferredAppTurnAfterInternalSendFails(t
 	}
 	want := []core.ExternalConversationEvent{
 		{SessionID: threadID, Role: "user", Content: "App 消息"},
-		{SessionID: threadID, Role: "assistant", Content: "App 回答"},
+		{SessionID: threadID, Role: "assistant", Content: "App 回答", TurnCompleted: true},
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events after failed internal send = %#v, want %#v", events, want)

@@ -525,9 +525,7 @@ func (a *Agent) PollExternalConversation(_ context.Context, sessionID string) ([
 				continue
 			}
 			state.externalTurn = false
-			if assistant != "" {
-				events = append(events, core.ExternalConversationEvent{SessionID: sessionID, Role: "assistant", Content: assistant})
-			}
+			events = appendDesktopCompletionEvent(events, sessionID, assistant)
 		}
 	}
 	state.offset = offset
@@ -571,10 +569,19 @@ func appendDesktopTurnEvents(events []core.ExternalConversationEvent, user core.
 	if desktopEventHasContent(user) {
 		events = append(events, user)
 	}
+	return appendDesktopCompletionEvent(events, user.SessionID, assistant)
+}
+
+func appendDesktopCompletionEvent(events []core.ExternalConversationEvent, sessionID, assistant string) []core.ExternalConversationEvent {
 	if assistant = strings.TrimSpace(assistant); assistant != "" {
-		events = append(events, core.ExternalConversationEvent{SessionID: user.SessionID, Role: "assistant", Content: assistant})
+		return append(events, core.ExternalConversationEvent{
+			SessionID:     sessionID,
+			Role:          "assistant",
+			Content:       assistant,
+			TurnCompleted: true,
+		})
 	}
-	return events
+	return append(events, core.ExternalConversationEvent{SessionID: sessionID, TurnCompleted: true})
 }
 
 func desktopEventHasContent(event core.ExternalConversationEvent) bool {

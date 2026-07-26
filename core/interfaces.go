@@ -461,13 +461,14 @@ type RecoverableAgentSessionStarter interface {
 	StartRecoverableSession(ctx context.Context, sessionID, recoveryKey string) (AgentSession, error)
 }
 
-// ExternalConversationEvent is a user or assistant message created outside
-// cc-connect in an agent-owned conversation.
+// ExternalConversationEvent is a user or assistant message, or a turn
+// completion signal, created outside cc-connect in an agent-owned conversation.
 type ExternalConversationEvent struct {
-	SessionID string
-	Role      string
-	Content   string
-	Images    []ImageAttachment
+	SessionID     string
+	Role          string
+	Content       string
+	Images        []ImageAttachment
+	TurnCompleted bool
 }
 
 // ExternalConversationPoller is an optional capability for agent backends
