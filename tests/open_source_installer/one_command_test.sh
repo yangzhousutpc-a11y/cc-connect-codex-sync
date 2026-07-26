@@ -32,12 +32,12 @@ printf 'setup\n' >>"$CC_TEST_CALLS"
 exit "${CC_TEST_SETUP_EXIT:-0}"
 EOF
   chmod 755 "$bundle/setup.sh"
-  printf 'version=v1.0.2\n' >"$bundle/VERSION"
+  printf 'version=v1.1.0\n' >"$bundle/VERSION"
   tar -C "$case_root/bundle" -czf "$fixture/archive.tar.gz" cc-connect-source-install
   (
     cd "$fixture"
     shasum -a 256 archive.tar.gz |
-      sed 's/archive\.tar\.gz/cc-connect-codex-sync-v1.0.2-macos-source.tar.gz/' \
+      sed 's/archive\.tar\.gz/cc-connect-codex-sync-v1.1.0-macos-source.tar.gz/' \
       >archive.tar.gz.sha256
   )
 
@@ -70,7 +70,7 @@ printf 'curl <%s>\n' "$url" >>"$CC_TEST_CALLS"
 case "$url" in
   */releases/latest)
     printf 'https://github.com/yangzhousutpc-a11y/cc-connect-codex-sync/releases/tag/%s' \
-      "${CC_TEST_TAG:-v1.0.2}"
+      "${CC_TEST_TAG:-v1.1.0}"
     ;;
   */cc-connect-codex-sync-*-macos-source.tar.gz)
     cp "$CC_TEST_FIXTURE/archive.tar.gz" "$output"
@@ -90,7 +90,7 @@ run_installer() {
     PATH="$fake_bin:/usr/bin:/bin" \
     CC_TEST_CALLS="$calls" \
     CC_TEST_FIXTURE="$fixture" \
-    CC_TEST_TAG="${CC_TEST_TAG:-v1.0.2}" \
+    CC_TEST_TAG="${CC_TEST_TAG:-v1.1.0}" \
     CC_TEST_SETUP_EXIT="${CC_TEST_SETUP_EXIT:-0}" \
     "$installer"
 }
@@ -118,7 +118,7 @@ assert_cleaned
 
 new_case bad_checksum
 printf '0%.0s' $(jot 64 1 64) >"$fixture/archive.tar.gz.sha256"
-printf '  cc-connect-codex-sync-v1.0.2-macos-source.tar.gz\n' >>"$fixture/archive.tar.gz.sha256"
+printf '  cc-connect-codex-sync-v1.1.0-macos-source.tar.gz\n' >>"$fixture/archive.tar.gz.sha256"
 if run_installer >/dev/null 2>&1; then
   fail 'bad checksum unexpectedly succeeded'
 fi
@@ -135,7 +135,7 @@ tar -C "$case_root/bundle" -czf "$fixture/archive.tar.gz" unexpected
 (
   cd "$fixture"
   shasum -a 256 archive.tar.gz |
-    sed 's/archive\.tar\.gz/cc-connect-codex-sync-v1.0.2-macos-source.tar.gz/' \
+    sed 's/archive\.tar\.gz/cc-connect-codex-sync-v1.1.0-macos-source.tar.gz/' \
     >archive.tar.gz.sha256
 )
 if run_installer >/dev/null 2>&1; then
@@ -150,7 +150,7 @@ tar -C "$case_root/bundle" -czf "$fixture/archive.tar.gz" cc-connect-source-inst
 (
   cd "$fixture"
   shasum -a 256 archive.tar.gz |
-    sed 's/archive\.tar\.gz/cc-connect-codex-sync-v1.0.2-macos-source.tar.gz/' \
+    sed 's/archive\.tar\.gz/cc-connect-codex-sync-v1.1.0-macos-source.tar.gz/' \
     >archive.tar.gz.sha256
 )
 if run_installer >/dev/null 2>&1; then
