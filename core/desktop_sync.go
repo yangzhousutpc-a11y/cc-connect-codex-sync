@@ -127,7 +127,6 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 			continue
 		}
 
-		completedTurnRelayed := false
 	eventLoop:
 		for i := range events {
 			// The active session may have changed while PollExternalConversation
@@ -139,7 +138,6 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 			event := &events[i]
 			content := strings.TrimSpace(event.Content)
 			imageCount := len(event.Images)
-			eventRelayed := false
 			if content == "" && len(event.Images) == 0 {
 				e.desktopSyncPending[pendingKey] = events[i+1:]
 				continue
@@ -155,7 +153,6 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 					e.desktopSyncPending[pendingKey] = events[i:]
 					break
 				}
-				eventRelayed = true
 				event.Content = ""
 				e.desktopSyncPending[pendingKey] = events[i:]
 			}
@@ -182,7 +179,6 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 						e.desktopSyncPending[pendingKey] = events[i:]
 						break
 					}
-					eventRelayed = true
 					event.Images = event.Images[1:]
 					e.desktopSyncPending[pendingKey] = events[i:]
 				}
@@ -192,7 +188,6 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 			}
 
 			e.desktopSyncPending[pendingKey] = events[i+1:]
-			completedTurnRelayed = completedTurnRelayed || (eventRelayed && event.Role == "assistant")
 			slog.Info("desktop live sync sent",
 				"role", event.Role,
 				"content_len", len(content),
@@ -201,50 +196,7 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 		}
 		if len(e.desktopSyncPending[pendingKey]) == 0 {
 			delete(e.desktopSyncPending, pendingKey)
-			if completedTurnRelayed {
-				e.reassertDesktopSessionName(poller, sessions, sessionID, sessionKey)
-			}
 		}
-	}
-}
-
-// reassertDesktopSessionName restores a custom title after Codex App completes
-// an external turn, which may cause the app-server to derive the title again.
-func (e *Engine) reassertDesktopSessionName(poller ExternalConversationPoller, sessions *SessionManager, sessionID, sessionKey string) {
-	if e.externalConversationRoutes(sessions.AgentSessionRoutes())[sessionID] != sessionKey {
-		return
-	}
-	name := strings.TrimSpace(sessions.GetSessionName(sessionID))
-	if name == "" {
-		return
-	}
-
-	e.interactiveMu.Lock()
-	states := make([]*interactiveState, 0, len(e.interactiveStates))
-	for _, state := range e.interactiveStates {
-		states = append(states, state)
-	}
-	e.interactiveMu.Unlock()
-	for _, state := range states {
-		state.mu.Lock()
-		agentSession := state.agentSession
-		state.mu.Unlock()
-		if agentSession == nil || agentSession.CurrentSessionID() != sessionID {
-			continue
-		}
-		if err := syncRequiredAgentSessionName(agentSession, name); err != nil {
-			slog.Warn("desktop live sync name reassertion failed")
-		}
-		return
-	}
-
-	agent, ok := poller.(Agent)
-	if !ok {
-		slog.Warn("desktop live sync name reassertion failed")
-		return
-	}
-	if err := e.restoreAgentSessionName(agent, sessionID, name); err != nil {
-		slog.Warn("desktop live sync name reassertion failed")
 	}
 }
 

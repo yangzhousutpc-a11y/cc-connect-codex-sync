@@ -214,6 +214,7 @@ type appServerSession struct {
 	context   *core.ContextUsage
 
 	nameMu             sync.Mutex
+	sessionName        string
 	refreshThreadInUI  func(string)
 	primeMu            sync.Mutex
 	sessionPrimed      bool
@@ -522,6 +523,10 @@ func (s *appServerSession) SetSessionName(name string) error {
 
 	s.nameMu.Lock()
 	defer s.nameMu.Unlock()
+	if s.sessionName == name {
+		s.refreshThread(threadID)
+		return nil
+	}
 
 	if err := s.request("thread/name/set", map[string]any{
 		"threadId": threadID,
@@ -529,6 +534,7 @@ func (s *appServerSession) SetSessionName(name string) error {
 	}, nil); err != nil {
 		return fmt.Errorf("codex app-server set thread name: %w", err)
 	}
+	s.sessionName = name
 	slog.Info("codex app-server thread name synced", "thread_id", threadID, "name", name)
 	s.refreshThread(threadID)
 	return nil
