@@ -540,6 +540,9 @@ func (s *appServerSession) setSessionName(name string, force bool) error {
 		"threadId": threadID,
 		"name":     name,
 	}, nil); err != nil {
+		if force {
+			s.sessionName = ""
+		}
 		return fmt.Errorf("codex app-server set thread name: %w", err)
 	}
 	s.sessionName = name

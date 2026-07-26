@@ -377,6 +377,69 @@ func TestAppServerSession_SetSessionNameSyncsAndSkipsDuplicates(t *testing.T) {
 	}
 }
 
+func TestAppServerSession_ReassertFailureRetriesSameNameOnOrdinarySet(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stdin := &lockedWriteCloser{}
+	s := &appServerSession{
+		ctx:               ctx,
+		stdin:             stdin,
+		pending:           make(map[int64]chan rpcResponseEnvelope),
+		refreshThreadInUI: func(string) {},
+	}
+	s.threadID.Store("thread-1")
+
+	callName := func(operation string, invoke func() error, response rpcResponseEnvelope) error {
+		t.Helper()
+		wantLine := strings.Count(stdin.String(), "\n") + 1
+		done := make(chan error, 1)
+		go func() { done <- invoke() }()
+
+		line := waitForWrittenJSONLineCount(t, stdin, wantLine)
+		var req struct {
+			ID     int64          `json:"id"`
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal([]byte(line), &req); err != nil {
+			t.Fatalf("decode %s request %q: %v", operation, line, err)
+		}
+		if req.Method != "thread/name/set" || req.Params["threadId"] != "thread-1" || req.Params["name"] != "A" {
+			t.Fatalf("%s request = %#v", operation, req)
+		}
+
+		s.pendingMu.Lock()
+		responseCh := s.pending[req.ID]
+		s.pendingMu.Unlock()
+		response.ID = req.ID
+		responseCh <- response
+		return <-done
+	}
+
+	if err := callName("initial SetSessionName", func() error {
+		return s.SetSessionName("A")
+	}, rpcResponseEnvelope{Result: json.RawMessage(`{}`)}); err != nil {
+		t.Fatalf("initial SetSessionName: %v", err)
+	}
+
+	err := callName("failed ReassertSessionName", func() error {
+		return s.ReassertSessionName("A")
+	}, rpcResponseEnvelope{Error: &rpcError{Code: -32000, Message: "forced rename rejected"}})
+	if err == nil || !strings.Contains(err.Error(), "forced rename rejected") {
+		t.Fatalf("ReassertSessionName error = %v, want forced rename rejection", err)
+	}
+
+	if err := callName("retry SetSessionName", func() error {
+		return s.SetSessionName("A")
+	}, rpcResponseEnvelope{Result: json.RawMessage(`{}`)}); err != nil {
+		t.Fatalf("retry SetSessionName: %v", err)
+	}
+	if got := strings.Count(stdin.String(), "\n"); got != 3 {
+		t.Fatalf("thread/name/set request count = %d, want 3", got)
+	}
+}
+
 func TestAppServerSession_EnsureThreadResumesMatchingRecoveryKey(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
