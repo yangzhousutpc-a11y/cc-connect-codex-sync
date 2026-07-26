@@ -1502,7 +1502,7 @@ app_secret = "your-feishu-app-secret"
 # cc-connect weixin setup --project my-project
 
 # Enterprise WeChat intelligent bot (API WebSocket) can be added with:
-# cc-connect wecom setup --project my-project
+# cc-connect wecom setup --project my-project --bot-name "Bot display name"
 `
 	return os.WriteFile(path, []byte(tmpl), 0o644)
 }
@@ -1585,7 +1585,7 @@ Commands:
     bind             Bind existing ilink bot token
 
   wecom              Setup Enterprise WeChat intelligent-bot credentials
-    setup            Configure an Enterprise WeChat intelligent bot
+    setup            Configure an Enterprise WeChat intelligent bot (supports --bot-name)
     bind             Bind existing bot_id/bot_secret
 
   config             Manage configuration
@@ -1607,7 +1607,7 @@ Examples:
   cc-connect cron list                List all scheduled tasks
   cc-connect feishu setup             Setup Feishu/Lark bot credentials
   cc-connect weixin setup             Setup Weixin (ilink) with QR or --token
-  cc-connect wecom setup              Setup Enterprise WeChat intelligent-bot credentials
+  cc-connect wecom setup --bot-name "Bot display name"  Setup Enterprise WeChat intelligent-bot credentials
   cc-connect update                   Update to the latest version
   cc-connect config format            Format the config file
   cc-connect config example > c.toml  Save example config to a file

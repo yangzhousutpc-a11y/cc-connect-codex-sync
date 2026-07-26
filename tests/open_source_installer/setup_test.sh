@@ -111,12 +111,20 @@ assert_platform_choice() {
   shift
   platform_case=choice_$choice
   new_case "$platform_case"
-  run_setup "$choice\ndemo project\n$case_root/work dir\n" >/dev/null
+  selected_platforms=" $* "
+  bot_name=
+  case "$selected_platforms" in
+    *' wecom '*) bot_name="Yang's Codex" ;;
+  esac
+  setup_input="$choice\ndemo project\n$case_root/work dir\n"
+  if [ -n "$bot_name" ]; then
+    setup_input="${setup_input}${bot_name}\n"
+  fi
+  run_setup "$setup_input" >/dev/null
   [ "$(grep -c '^bootstrap$' "$case_root/calls")" = 1 ] || fail "$platform_case built more than once"
   assert_contains "$case_root/calls" 'runtime <config> <init>'
   assert_contains "$case_root/calls" 'install <--binary>'
   assert_contains "$case_root/calls" 'doctor'
-  selected_platforms=" $* "
   for platform in feishu weixin wecom; do
     expected="runtime <$platform> <setup> <--config> <$case_root/home/cc-connect/data/config.toml.setup> <--project> <demo project>"
     call_count=$(grep -F -c -- "$expected" "$case_root/calls" || true)
@@ -129,6 +137,11 @@ assert_platform_choice() {
         ;;
     esac
   done
+  if [ -n "$bot_name" ]; then
+    assert_contains "$case_root/calls" "runtime <wecom> <setup> <--config> <$case_root/home/cc-connect/data/config.toml.setup> <--project> <demo project> <--bot-name> <$bot_name>"
+  else
+    ! grep -F -- '<--bot-name>' "$case_root/calls" >/dev/null || fail "$platform_case unexpectedly passed bot name"
+  fi
   [ -f "$case_root/home/cc-connect/data/config.toml" ] || fail "$platform_case missing final config"
   assert_absent "$case_root/home/cc-connect/data/config.toml.setup"
 }
@@ -140,6 +153,11 @@ assert_platform_choice 4 wecom
 assert_platform_choice 5 feishu wecom
 assert_platform_choice 6 weixin wecom
 assert_platform_choice 7 feishu weixin wecom
+
+new_case wecom_empty_bot_name
+run_setup "4\ndemo project\n$case_root/work dir\n\n" >/dev/null
+assert_contains "$case_root/calls" "runtime <wecom> <setup> <--config> <$case_root/home/cc-connect/data/config.toml.setup> <--project> <demo project>"
+! grep -F -- '<--bot-name>' "$case_root/calls" >/dev/null || fail 'empty bot name should not be passed'
 
 new_case platform_failure
 CC_TEST_FAIL_PLATFORM=weixin

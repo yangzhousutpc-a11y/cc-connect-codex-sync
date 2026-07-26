@@ -157,7 +157,7 @@ install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.to
 # Edit ~/cc-connect/data/config.toml with the real project name and absolute work directory.
 ~/cc-connect/runtime/cc-connect feishu setup --project my-project
 ~/cc-connect/runtime/cc-connect weixin setup --project my-project
-~/cc-connect/runtime/cc-connect wecom setup --project my-project
+~/cc-connect/runtime/cc-connect wecom setup --project my-project --bot-name "Bot display name"
 
 ./bootstrap.sh --activate
 ./doctor.sh

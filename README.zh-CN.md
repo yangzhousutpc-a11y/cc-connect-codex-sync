@@ -157,7 +157,7 @@ install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.to
 # 编辑 ~/cc-connect/data/config.toml，将项目名和绝对工作目录改为真实值
 ~/cc-connect/runtime/cc-connect feishu setup --project my-project
 ~/cc-connect/runtime/cc-connect weixin setup --project my-project
-~/cc-connect/runtime/cc-connect wecom setup --project my-project
+~/cc-connect/runtime/cc-connect wecom setup --project my-project --bot-name "机器人显示名"
 
 ./bootstrap.sh --activate
 ./doctor.sh

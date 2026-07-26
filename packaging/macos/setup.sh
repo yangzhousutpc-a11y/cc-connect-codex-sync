@@ -120,6 +120,12 @@ case "$work_dir" in
 esac
 [ -d "$work_dir" ] || die "工作目录不存在或不是目录：$work_dir"
 
+wecom_bot_name=
+if [ "$setup_wecom" -eq 1 ]; then
+  printf '请输入企业微信机器人显示名（可留空）：'
+  IFS= read -r wecom_bot_name || die '未读取到企业微信机器人显示名'
+fi
+
 staging_owned=0
 cleanup() {
   status=$?
@@ -151,7 +157,11 @@ if [ "$setup_weixin" -eq 1 ]; then
 fi
 if [ "$setup_wecom" -eq 1 ]; then
   note '配置企业微信智能机器人'
-  "$runtime" wecom setup --config "$staging_config" --project "$project"
+  if [ -n "$(printf '%s' "$wecom_bot_name" | tr -d '[:space:]')" ]; then
+    "$runtime" wecom setup --config "$staging_config" --project "$project" --bot-name "$wecom_bot_name"
+  else
+    "$runtime" wecom setup --config "$staging_config" --project "$project"
+  fi
 fi
 
 ln "$staging_config" "$config_path" || die '正式配置已被其他进程创建，拒绝覆盖'

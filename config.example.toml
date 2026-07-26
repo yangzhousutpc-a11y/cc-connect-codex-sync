@@ -50,7 +50,7 @@ allow_from = "*"
 account_id = "default"
 
 # 企业微信智能机器人：先在管理后台开启 API 长连接模式，再运行
-# `cc-connect wecom setup --project my-project` 在本机安全写入 BotID 与 Secret。
+# `cc-connect wecom setup --project my-project --bot-name "机器人显示名"` 在本机安全写入 BotID 与 Secret。
 # 以下内容保持注释，避免占位凭据影响首次启动。
 # [[projects.platforms]]
 # type = "wecom"

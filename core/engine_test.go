@@ -7937,6 +7937,47 @@ func TestProcessInteractiveMessageWithWeComCustomNameOverridesSynthesizedChatNam
 	}
 }
 
+func TestWeComCustomNamePersistsAcrossEngineRestart(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "sessions.json")
+	p := &stubPlatformEngine{n: "wecom"}
+	firstLive := &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")}
+	firstAgent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{nextSession: firstLive}}
+	first := NewEngine("test", firstAgent, []Platform{p}, storePath, LangChinese)
+
+	const sessionKey = "wecom:g:group-restart"
+	const want = "[企业微信-Codex] 实际企微群名"
+	session := first.sessions.GetOrCreateActive(sessionKey)
+	session.SetAgentSessionID("thread-wecom", firstAgent.Name())
+	first.sessions.Save()
+	first.interactiveStates[sessionKey] = &interactiveState{agentSession: firstLive, platform: p, replyCtx: "ctx"}
+	first.cmdName(p, &Message{SessionKey: sessionKey, ReplyCtx: "ctx"}, []string{"实际企微群名"})
+
+	restartedLive := &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")}
+	restartedAgent := &controllableAgent{nextSession: restartedLive}
+	restarted := NewEngine("test", restartedAgent, []Platform{p}, storePath, LangChinese)
+	restartedSession := restarted.sessions.GetOrCreateActive(sessionKey)
+	if got := restarted.sessions.GetSessionName("thread-wecom"); got != want {
+		t.Fatalf("reloaded custom name = %q, want %q", got, want)
+	}
+	if !restartedSession.TryLock() {
+		t.Fatal("expected restarted session lock")
+	}
+	restarted.interactiveStates[sessionKey] = &interactiveState{agentSession: restartedLive, platform: p, replyCtx: "ctx"}
+	restartedLive.events <- Event{Type: EventResult, Content: "完成", Done: true}
+
+	restarted.processInteractiveMessageWith(p, &Message{
+		SessionKey: sessionKey,
+		UserID:     "user-1",
+		Content:    "重启后的普通消息",
+		ChatName:   "企业微信群-000002",
+		ReplyCtx:   "ctx",
+	}, restartedSession, restartedAgent, restarted.sessions, sessionKey, "", sessionKey)
+
+	if got, wantNames := restartedLive.names, []string{want, want}; !reflect.DeepEqual(got, wantNames) {
+		t.Fatalf("restarted synced names = %#v, want %#v", got, wantNames)
+	}
+}
+
 func TestProcessInteractiveMessageWith_InPlacePlatformKeepsLogicalSessionNameAfterOperation(t *testing.T) {
 	p := &inPlaceNewPlatform{stubPlatformEngine: &stubPlatformEngine{n: "weixin"}}
 	agentSession := &namingAgentSession{controllableAgentSession: newControllableSession("thread-new")}

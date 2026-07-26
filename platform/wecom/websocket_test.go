@@ -127,6 +127,28 @@ func TestNewUsesConfiguredBotNameForInboundMention(t *testing.T) {
 	}
 }
 
+func TestInboundStripsCallbackBotIDWithoutBotNameAndKeepsMemberMention(t *testing.T) {
+	p := newInboundTestPlatform()
+	p.botID = "configured-bot"
+	got := make(chan *core.Message, 1)
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got <- msg
+		close(msg.DispatchAdmission)
+	}
+	body := callbackBody("m-aibot-id", "group", "group-12345678", "user-a", "text", "@张三 ＠CALLBACK-BOT 正文")
+	body.AibotID = "callback-bot"
+	p.handleMsgCallback(callbackFrame(t, "req-aibot-id", body))
+
+	select {
+	case msg := <-got:
+		if msg.Content != "@张三 正文" {
+			t.Fatalf("inbound content = %q, want member mention retained and callback bot mention removed", msg.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for inbound message")
+	}
+}
+
 func TestInboundStableKeysNamesAndReplyContext(t *testing.T) {
 	p := newInboundTestPlatform()
 	got := make(chan *core.Message, 3)

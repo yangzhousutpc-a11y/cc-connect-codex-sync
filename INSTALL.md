@@ -43,4 +43,4 @@ Agent: Codex
 Platforms: Feishu, personal Weixin, WeCom
 ```
 
-企业微信使用智能机器人的 API 长连接模式。请先完成安装，再按[企业微信指南](docs/wecom.md)运行 `cc-connect wecom setup`；BotID 与 Secret 只保存在本机配置中。
+企业微信使用智能机器人的 API 长连接模式。请先完成安装，再按[企业微信指南](docs/wecom.md)运行 `cc-connect wecom setup --bot-name "机器人显示名"`；`--bot-name` 用于精确去除机器人的 @ 前缀，BotID 与 Secret 只保存在本机配置中。

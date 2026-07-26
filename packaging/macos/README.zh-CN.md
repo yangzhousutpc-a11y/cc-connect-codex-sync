@@ -38,7 +38,7 @@ install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.to
 # 编辑 ~/cc-connect/data/config.toml 后，将 my-project 替换为配置中的项目名
 ~/cc-connect/runtime/cc-connect feishu setup --project my-project
 ~/cc-connect/runtime/cc-connect weixin setup --project my-project
-~/cc-connect/runtime/cc-connect wecom setup --project my-project
+~/cc-connect/runtime/cc-connect wecom setup --project my-project --bot-name "机器人显示名"
 ./bootstrap.sh --activate
 ./doctor.sh
 ```
