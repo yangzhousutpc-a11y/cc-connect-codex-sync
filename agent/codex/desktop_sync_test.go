@@ -358,6 +358,208 @@ func TestDesktopTaskCompleteWithoutTurnIDFailsSafeWhenAmbiguous(t *testing.T) {
 	}
 }
 
+func TestDesktopUserMessageFallsBackToLatestInFlightTurn(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-a"}}`,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-b"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-b"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"request a"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-a","last_agent_message":"response a"}}`,
+	)
+
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "request a"},
+		{SessionID: threadID, Role: "assistant", Content: "response a", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
+func TestDesktopInFlightTurnsPruneOldestAtCapacity(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	lines := make([]string, 0, 300)
+	for i := 0; i < 300; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-%03d"}}`,
+			i,
+		))
+	}
+	appendTranscript(t, transcript, lines...)
+	if events, err := a.PollExternalConversation(context.Background(), threadID); err != nil || len(events) != 0 {
+		t.Fatalf("start-only events = %#v, %v; want none", events, err)
+	}
+
+	a.desktopPollMu.Lock()
+	state := a.desktopPolls[threadID]
+	turnCount := len(state.turns)
+	_, oldestRemains := state.turns["turn-000"]
+	_, newestRemains := state.turns["turn-299"]
+	a.desktopPollMu.Unlock()
+	if turnCount != 256 || oldestRemains || !newestRemains {
+		t.Fatalf("in-flight state count=%d oldest=%v newest=%v; want 256, false, true", turnCount, oldestRemains, newestRemains)
+	}
+
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"latest request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-299","last_agent_message":"latest response"}}`,
+	)
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "latest request"},
+		{SessionID: threadID, Role: "assistant", Content: "latest response", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("latest events = %#v, want %#v", events, want)
+	}
+}
+
+func TestDesktopDeferredTurnsPruneOldestAtCapacityWithoutDuplicates(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	ticket := a.desktopOrigins.begin(threadID)
+	lines := make([]string, 0, 260*3)
+	for i := 0; i < 260; i++ {
+		turnID := fmt.Sprintf("turn-deferred-%03d", i)
+		lines = append(lines,
+			fmt.Sprintf(`{"type":"event_msg","payload":{"type":"task_started","turn_id":"%s"}}`, turnID),
+			fmt.Sprintf(`{"type":"event_msg","payload":{"type":"user_message","message":"request %03d"}}`, i),
+			fmt.Sprintf(`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"%s","last_agent_message":"response %03d"}}`, turnID, i),
+		)
+	}
+	appendTranscript(t, transcript, lines...)
+	if events, err := a.PollExternalConversation(context.Background(), threadID); err != nil || len(events) != 0 {
+		t.Fatalf("deferred events = %#v, %v; want pending", events, err)
+	}
+
+	a.desktopPollMu.Lock()
+	state := a.desktopPolls[threadID]
+	deferredCount := len(state.deferred)
+	firstTurnID := state.deferred[0].turnID
+	lastTurnID := state.deferred[len(state.deferred)-1].turnID
+	a.desktopPollMu.Unlock()
+	if deferredCount != 256 || firstTurnID != "turn-deferred-004" || lastTurnID != "turn-deferred-259" {
+		t.Fatalf("deferred state count=%d first=%q last=%q", deferredCount, firstTurnID, lastTurnID)
+	}
+
+	a.desktopOrigins.cancel(ticket)
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 512 {
+		t.Fatalf("resolved events = %d, want 512", len(events))
+	}
+	for i := 0; i < 256; i++ {
+		user, assistant := events[i*2], events[i*2+1]
+		wantIndex := i + 4
+		if user.Content != fmt.Sprintf("request %03d", wantIndex) ||
+			assistant.Content != fmt.Sprintf("response %03d", wantIndex) ||
+			user.TurnCompleted || !assistant.TurnCompleted {
+			t.Fatalf("resolved pair %d = %#v, %#v", i, user, assistant)
+		}
+	}
+	if events, err := a.PollExternalConversation(context.Background(), threadID); err != nil || len(events) != 0 {
+		t.Fatalf("events after deferred resolution = %#v, %v; want none", events, err)
+	}
+}
+
+func TestDesktopPollPrunesExpiredKeyedTurnBeforeLegacyCompletion(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-stale"}}`,
+	)
+	if events, err := a.PollExternalConversation(context.Background(), threadID); err != nil || len(events) != 0 {
+		t.Fatalf("stale start events = %#v, %v; want none", events, err)
+	}
+
+	a.desktopPollMu.Lock()
+	a.desktopPolls[threadID].turns["turn-stale"].startedAt = time.Now().Add(-25 * time.Hour)
+	a.desktopPollMu.Unlock()
+	if events, err := a.PollExternalConversation(context.Background(), threadID); err != nil || len(events) != 0 {
+		t.Fatalf("prune poll events = %#v, %v; want none", events, err)
+	}
+
+	a.desktopPollMu.Lock()
+	_, staleRemains := a.desktopPolls[threadID].turns["turn-stale"]
+	a.desktopPollMu.Unlock()
+	if staleRemains {
+		t.Fatal("expired keyed turn remained after poll")
+	}
+
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-live"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"live request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"live response"}}`,
+	)
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "live request"},
+		{SessionID: threadID, Role: "assistant", Content: "live response", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
+func TestDesktopPollPrunesExpiredLegacyTurnBeforeUniqueFallback(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"user_message","client_id":"legacy-client","message":"stale legacy request"}}`,
+	)
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "stale legacy request"},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("legacy events = %#v, want %#v", events, want)
+	}
+
+	a.desktopPollMu.Lock()
+	a.desktopPolls[threadID].legacyTurn.startedAt = time.Now().Add(-25 * time.Hour)
+	a.desktopPollMu.Unlock()
+	if events, err := a.PollExternalConversation(context.Background(), threadID); err != nil || len(events) != 0 {
+		t.Fatalf("prune poll events = %#v, %v; want none", events, err)
+	}
+
+	a.desktopPollMu.Lock()
+	legacyRemains := a.desktopPolls[threadID].legacyTurn != nil
+	a.desktopPollMu.Unlock()
+	if legacyRemains {
+		t.Fatal("expired legacy turn remained after poll")
+	}
+
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-live"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"live request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"live response"}}`,
+	)
+	events, err = a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "live request"},
+		{SessionID: threadID, Role: "assistant", Content: "live response", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
 func TestPollExternalConversationOnlyReturnsCodexAppTurns(t *testing.T) {
 	codexHome := t.TempDir()
 	sessionsDir := filepath.Join(codexHome, "sessions", "2026", "07", "21")

@@ -22,6 +22,7 @@ type desktopPollState struct {
 	offset               int64
 	initialized          bool
 	latestTurnID         string
+	nextTurnSequence     uint64
 	turns                map[string]*desktopInFlightTurn
 	legacyTurn           *desktopInFlightTurn
 	deferred             []desktopDeferredTurn
@@ -39,11 +40,19 @@ const (
 	desktopTurnDeferred
 )
 
+const (
+	desktopInFlightTurnTTL = 24 * time.Hour
+	desktopInFlightTurnMax = 256
+	desktopDeferredTurnMax = 256
+)
+
 type desktopInFlightTurn struct {
 	user           desktopRawUserEvent
 	origin         desktopTurnOrigin
 	sawTaskStarted bool
 	sawUserMessage bool
+	sequence       uint64
+	startedAt      time.Time
 }
 
 type desktopDeferredTurn struct {
@@ -58,35 +67,35 @@ type desktopRawUserEvent struct {
 }
 
 func (s *desktopPollState) startTurn(turnID string) {
+	now := time.Now()
+	s.pruneTurns(now)
 	turnID = strings.TrimSpace(turnID)
-	s.latestTurnID = turnID
-	turn := &desktopInFlightTurn{sawTaskStarted: true}
+	turn := s.newTurn(now, true)
 	if turnID == "" {
 		s.legacyTurn = turn
-		return
+	} else {
+		if s.turns == nil {
+			s.turns = make(map[string]*desktopInFlightTurn)
+		}
+		s.turns[turnID] = turn
 	}
-	if s.turns == nil {
-		s.turns = make(map[string]*desktopInFlightTurn)
-	}
-	s.turns[turnID] = turn
+	s.pruneTurns(now)
 }
 
 func (s *desktopPollState) currentTurn() (string, *desktopInFlightTurn) {
+	now := time.Now()
+	s.pruneTurns(now)
 	// user_message does not carry turn_id, so it belongs to the most recent
 	// task_started event that has not already completed.
-	if s.latestTurnID != "" {
-		if turn := s.turns[s.latestTurnID]; turn != nil {
-			return s.latestTurnID, turn
-		}
-		s.latestTurnID = ""
+	if turnID, turn := s.latestTurn(); turn != nil {
+		return turnID, turn
 	}
-	if s.legacyTurn == nil {
-		s.legacyTurn = &desktopInFlightTurn{}
-	}
+	s.legacyTurn = s.newTurn(now, false)
 	return "", s.legacyTurn
 }
 
 func (s *desktopPollState) takeCompletedTurn(turnID string) (string, *desktopInFlightTurn, bool) {
+	s.pruneTurns(time.Now())
 	turnID = strings.TrimSpace(turnID)
 	if turnID != "" {
 		turn, ok := s.turns[turnID]
@@ -94,9 +103,7 @@ func (s *desktopPollState) takeCompletedTurn(turnID string) (string, *desktopInF
 			return "", nil, false
 		}
 		delete(s.turns, turnID)
-		if s.latestTurnID == turnID {
-			s.latestTurnID = ""
-		}
+		s.latestTurn()
 		return turnID, turn, true
 	}
 
@@ -112,20 +119,91 @@ func (s *desktopPollState) takeCompletedTurn(turnID string) (string, *desktopInF
 	if s.legacyTurn != nil {
 		turn := s.legacyTurn
 		s.legacyTurn = nil
+		s.latestTurn()
 		return "", turn, true
 	}
 	for candidateID, turn := range s.turns {
 		delete(s.turns, candidateID)
-		if s.latestTurnID == candidateID {
-			s.latestTurnID = ""
-		}
+		s.latestTurn()
 		return candidateID, turn, true
 	}
 	return "", nil, false
 }
 
+func (s *desktopPollState) newTurn(now time.Time, sawTaskStarted bool) *desktopInFlightTurn {
+	s.nextTurnSequence++
+	return &desktopInFlightTurn{
+		sawTaskStarted: sawTaskStarted,
+		sequence:       s.nextTurnSequence,
+		startedAt:      now,
+	}
+}
+
+func (s *desktopPollState) latestTurn() (string, *desktopInFlightTurn) {
+	latestID := ""
+	var latest *desktopInFlightTurn
+	for turnID, turn := range s.turns {
+		if turn == nil {
+			continue
+		}
+		if latest == nil || turn.sequence > latest.sequence ||
+			(turn.sequence == latest.sequence && turnID > latestID) {
+			latestID = turnID
+			latest = turn
+		}
+	}
+	if s.legacyTurn != nil && (latest == nil || s.legacyTurn.sequence > latest.sequence) {
+		latestID = ""
+		latest = s.legacyTurn
+	}
+	s.latestTurnID = latestID
+	return latestID, latest
+}
+
+func (s *desktopPollState) pruneTurns(now time.Time) {
+	for turnID, turn := range s.turns {
+		if turn == nil || turn.startedAt.IsZero() || now.Sub(turn.startedAt) > desktopInFlightTurnTTL {
+			delete(s.turns, turnID)
+		}
+	}
+	if turn := s.legacyTurn; turn != nil &&
+		(turn.startedAt.IsZero() || now.Sub(turn.startedAt) > desktopInFlightTurnTTL) {
+		s.legacyTurn = nil
+	}
+	for len(s.turns) > desktopInFlightTurnMax {
+		oldestID := ""
+		var oldest *desktopInFlightTurn
+		for turnID, turn := range s.turns {
+			if oldest == nil || turn.sequence < oldest.sequence ||
+				(turn.sequence == oldest.sequence && turnID < oldestID) {
+				oldestID = turnID
+				oldest = turn
+			}
+		}
+		delete(s.turns, oldestID)
+	}
+	s.pruneDeferredTurns()
+	s.latestTurn()
+}
+
+func (s *desktopPollState) appendDeferredTurn(turn desktopDeferredTurn) {
+	s.deferred = append(s.deferred, turn)
+	s.pruneDeferredTurns()
+}
+
+func (s *desktopPollState) pruneDeferredTurns() {
+	if len(s.deferred) <= desktopDeferredTurnMax {
+		return
+	}
+	firstRetained := len(s.deferred) - desktopDeferredTurnMax
+	copy(s.deferred, s.deferred[firstRetained:])
+	clear(s.deferred[desktopDeferredTurnMax:])
+	s.deferred = s.deferred[:desktopDeferredTurnMax]
+}
+
 func (s *desktopPollState) resetTurns() {
 	s.latestTurnID = ""
+	s.nextTurnSequence = 0
 	s.turns = nil
 	s.legacyTurn = nil
 	s.deferred = nil
@@ -452,6 +530,7 @@ func (a *Agent) PollExternalConversation(_ context.Context, sessionID string) ([
 		state = &desktopPollState{}
 		a.desktopPolls[sessionID] = state
 	}
+	state.pruneTurns(time.Now())
 	if state.path == "" {
 		if !state.lastLookup.IsZero() && time.Since(state.lastLookup) < 30*time.Second {
 			recordCompatibilityChange(a.compatibilityTranscriptMissingState(state))
@@ -579,7 +658,7 @@ func (a *Agent) PollExternalConversation(_ context.Context, sessionID string) ([
 				switch {
 				case internal:
 				case pending:
-					state.deferred = append(state.deferred, desktopDeferredTurn{turnID: turnID, user: turn.user, assistant: assistant})
+					state.appendDeferredTurn(desktopDeferredTurn{turnID: turnID, user: turn.user, assistant: assistant})
 				default:
 					events = appendDesktopTurnEvents(events, materializeDesktopUserEvent(sessionID, turn.user), assistant)
 				}
