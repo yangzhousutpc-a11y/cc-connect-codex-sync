@@ -1655,6 +1655,7 @@ type = "wecom"
 mode = "websocket"
 bot_id = "bot_old"
 bot_secret = "secret_old"
+bot_name = "旧机器人显示名"
 allow_from = "zhangsan,lisi"
 custom_option = "keep_me"
 `
@@ -1696,6 +1697,9 @@ func TestSaveWeComPlatformCredentialsUpdatesOnlyTargetPlatform(t *testing.T) {
 	if got := stringMapValue(wecom.Options, "bot_secret"); got != "secret_new" {
 		t.Fatalf("bot_secret = %q, want secret_new", got)
 	}
+	if got := stringMapValue(wecom.Options, "bot_name"); got != "旧机器人显示名" {
+		t.Fatalf("bot_name = %q, want preserved existing name", got)
+	}
 	if got := stringMapValue(wecom.Options, "allow_from"); got != "zhangsan,lisi" {
 		t.Fatalf("allow_from = %q, want preserved", got)
 	}
@@ -1708,6 +1712,35 @@ func TestSaveWeComPlatformCredentialsUpdatesOnlyTargetPlatform(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("config permissions = %o, want 600", got)
+	}
+}
+
+func TestSaveWeComPlatformCredentialsPreservesEmptyBotNameAndUpdatesNonEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		botName string
+		want    string
+	}{
+		{name: "omitted", botName: "", want: "旧机器人显示名"},
+		{name: "whitespace", botName: "  ", want: "旧机器人显示名"},
+		{name: "replacement", botName: "新机器人显示名", want: "新机器人显示名"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := writeConfigFixture(t, wecomConfigFixture)
+			patchConfigPath(t, configPath)
+			if _, err := SaveWeComPlatformCredentials(WeComCredentialUpdateOptions{
+				ProjectName: "alpha",
+				BotID:       "bot_new",
+				BotSecret:   "secret_new",
+				BotName:     tc.botName,
+			}); err != nil {
+				t.Fatalf("SaveWeComPlatformCredentials returned error: %v", err)
+			}
+			cfg := readConfigFixture(t, configPath)
+			if got := stringMapValue(cfg.Projects[0].Platforms[1].Options, "bot_name"); got != tc.want {
+				t.Fatalf("bot_name = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

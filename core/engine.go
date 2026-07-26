@@ -8673,6 +8673,7 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 	// Check if first arg is a number → naming a specific session by list index
 	var targetID string
 	var name string
+	currentTarget := false
 
 	if idx, err := strconv.Atoi(args[0]); err == nil && idx >= 1 {
 		// /name <number> <name...>
@@ -8694,6 +8695,7 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 		name = strings.Join(args[1:], " ")
 	} else {
 		// /name <name...> → current session
+		currentTarget = true
 		session := sessions.GetOrCreateActive(msg.SessionKey)
 		targetID = session.GetAgentSessionID()
 		if targetID == "" {
@@ -8708,7 +8710,7 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgNameUsage))
 		return
 	}
-	if strings.EqualFold(p.Name(), "wecom") {
+	if currentTarget && strings.EqualFold(p.Name(), "wecom") {
 		if formatter, ok := agent.(ConversationSourceNameFormatter); ok {
 			if formatted := strings.TrimSpace(formatter.FormatConversationNameForPlatform("wecom", name)); formatted != "" {
 				name = formatted
@@ -8717,15 +8719,20 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 	}
 
 	sessions.SetSessionName(targetID, name)
+	var liveSyncErr error
 	if active := sessions.GetOrCreateActive(msg.SessionKey); active.GetAgentSessionID() == targetID {
 		active.SetName(name)
 		sessions.Save()
-		e.syncLiveAgentSessionName(interactiveKey, targetID, name)
+		liveSyncErr = e.syncLiveAgentSessionName(interactiveKey, targetID, name)
 	}
 
 	shortID := targetID
 	if len(shortID) > 12 {
 		shortID = shortID[:12]
+	}
+	if liveSyncErr != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgNameSavedSyncPending, name, shortID))
+		return
 	}
 	e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgNameSet), name, shortID))
 }
@@ -8734,7 +8741,7 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 // the target is the active conversation. The session-name map remains the
 // durable source of truth; this only keeps the open Codex App thread aligned
 // before the next incoming turn.
-func (e *Engine) syncLiveAgentSessionName(interactiveKey, targetID, name string) {
+func (e *Engine) syncLiveAgentSessionName(interactiveKey, targetID, name string) error {
 	e.interactiveMu.Lock()
 	state := e.interactiveStates[interactiveKey]
 	if state != nil {
@@ -8742,16 +8749,18 @@ func (e *Engine) syncLiveAgentSessionName(interactiveKey, targetID, name string)
 	}
 	e.interactiveMu.Unlock()
 	if state == nil {
-		return
+		return nil
 	}
 	agentSession := state.agentSession
 	state.mu.Unlock()
 	if agentSession == nil || agentSession.CurrentSessionID() != targetID {
-		return
+		return nil
 	}
 	if err := syncAgentSessionName(agentSession, name); err != nil {
 		slog.Warn("failed to sync renamed agent session", "name", name, "error", err)
+		return err
 	}
+	return nil
 }
 
 func (e *Engine) cmdCurrent(p Platform, msg *Message) {

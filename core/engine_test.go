@@ -7907,6 +7907,63 @@ func TestCmdNameWeComFormatsPersistsAndSynchronizesLiveSession(t *testing.T) {
 	}
 }
 
+func TestCmdNameWeComIndexedTargetKeepsExplicitNameUnformatted(t *testing.T) {
+	p := &stubPlatformEngine{n: "wecom"}
+	agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{
+		listFn: func() ([]AgentSessionInfo, error) {
+			return []AgentSessionInfo{{ID: "thread-feishu", Summary: "Feishu target"}}, nil
+		},
+	}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
+	current := e.sessions.GetOrCreateActive("wecom:g:group-1")
+	current.SetAgentSessionID("thread-wecom", agent.Name())
+
+	e.cmdName(p, &Message{SessionKey: "wecom:g:group-1", ReplyCtx: "ctx"}, []string{"1", "飞书目标名"})
+
+	if got := e.sessions.GetSessionName("thread-feishu"); got != "飞书目标名" {
+		t.Fatalf("indexed WeCom name = %q, want unformatted explicit target name", got)
+	}
+}
+
+func TestCmdNameWeComReportsLiveRenameFailureAndRetriesOnNextTurn(t *testing.T) {
+	p := &stubPlatformEngine{n: "wecom"}
+	live := &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")}
+	live.err = errors.New("desktop rename failed")
+	agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{nextSession: live}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
+
+	const sessionKey = "wecom:g:group-1"
+	const want = "[企业微信-Codex] 实际企微群名"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	session.SetAgentSessionID("thread-wecom", agent.Name())
+	e.interactiveStates[sessionKey] = &interactiveState{agentSession: live, platform: p, replyCtx: "ctx"}
+
+	e.cmdName(p, &Message{SessionKey: sessionKey, ReplyCtx: "ctx"}, []string{"实际企微群名"})
+
+	if got := e.sessions.GetSessionName("thread-wecom"); got != want {
+		t.Fatalf("persisted name = %q, want %q despite live failure", got, want)
+	}
+	if sent := p.getSent(); len(sent) != 1 || !strings.Contains(sent[0], "已保存") || !strings.Contains(sent[0], "即时同步失败") {
+		t.Fatalf("reply = %#v, want saved-but-live-sync-failed guidance", sent)
+	}
+
+	live.err = nil
+	if !session.TryLock() {
+		t.Fatal("expected session lock")
+	}
+	live.events <- Event{Type: EventResult, Content: "完成", Done: true}
+	e.processInteractiveMessageWith(p, &Message{
+		SessionKey: sessionKey,
+		UserID:     "user-1",
+		Content:    "后续普通消息",
+		ChatName:   "企业微信群-000001",
+		ReplyCtx:   "ctx",
+	}, session, agent, e.sessions, sessionKey, "", sessionKey)
+	if got := live.names; len(got) < 3 || got[len(got)-1] != want {
+		t.Fatalf("live rename calls = %#v, want retry with %q on later message", got, want)
+	}
+}
+
 func TestProcessInteractiveMessageWithWeComCustomNameOverridesSynthesizedChatName(t *testing.T) {
 	p := &stubPlatformEngine{n: "wecom"}
 	live := &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")}

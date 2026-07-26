@@ -222,6 +222,7 @@ const (
 	MsgHistoryEmpty              MsgKey = "history_empty"
 	MsgNameUsage                 MsgKey = "name_usage"
 	MsgNameSet                   MsgKey = "name_set"
+	MsgNameSavedSyncPending      MsgKey = "name_saved_sync_pending"
 	MsgNameNoSession             MsgKey = "name_no_session"
 	MsgProviderNotSupported      MsgKey = "provider_not_supported"
 	MsgProviderNone              MsgKey = "provider_none"
@@ -1503,6 +1504,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "✅ 會話已命名：**%s** (%s)",
 		LangJapanese:           "✅ セッション名設定：**%s** (%s)",
 		LangSpanish:            "✅ Sesión nombrada: **%s** (%s)",
+	},
+	MsgNameSavedSyncPending: {
+		LangEnglish:            "⚠️ Session name saved: **%s** (%s), but immediate Codex App sync failed. It will retry on the next message.",
+		LangChinese:            "⚠️ 会话名称已保存：**%s**（%s），但 Codex App 即时同步失败；将在后续消息时重试。",
+		LangTraditionalChinese: "⚠️ 會話名稱已儲存：**%s**（%s），但 Codex App 即時同步失敗；將在後續訊息時重試。",
+		LangJapanese:           "⚠️ セッション名を保存しました：**%s**（%s）。Codex App への即時同期に失敗したため、次のメッセージで再試行します。",
+		LangSpanish:            "⚠️ Nombre de sesión guardado: **%s** (%s), pero falló la sincronización inmediata con Codex App. Se reintentará en el siguiente mensaje.",
 	},
 	MsgNameNoSession: {
 		LangEnglish:            "❌ No active session. Send a message first or switch to a session.",
