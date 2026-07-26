@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -305,6 +306,10 @@ func TestAppServerSession_HandleRequestUserInputWritesCodexResponse(t *testing.T
 func TestAppServerSession_SetSessionNameSyncsAndSkipsDuplicates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	previousLogger := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 
 	stdin := &lockedWriteCloser{}
 	var refreshed []string
@@ -375,11 +380,24 @@ func TestAppServerSession_SetSessionNameSyncsAndSkipsDuplicates(t *testing.T) {
 	if !reflect.DeepEqual(refreshed, []string{"thread-1", "thread-1", "thread-1", "thread-1"}) {
 		t.Fatalf("refreshes after renamed thread = %#v", refreshed)
 	}
+	output := logs.String()
+	if !strings.Contains(output, `msg="codex app-server thread name synced"`) {
+		t.Fatalf("generic name-sync success log missing: %s", output)
+	}
+	for _, secret := range []string{"thread-1", "[Codex] Alpha", "[Codex] Beta"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("name-sync success log leaked %q: %s", secret, output)
+		}
+	}
 }
 
 func TestAppServerSession_ReassertFailureRetriesSameNameOnOrdinarySet(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	previousLogger := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 
 	stdin := &lockedWriteCloser{}
 	s := &appServerSession{
@@ -437,6 +455,12 @@ func TestAppServerSession_ReassertFailureRetriesSameNameOnOrdinarySet(t *testing
 	}
 	if got := strings.Count(stdin.String(), "\n"); got != 3 {
 		t.Fatalf("thread/name/set request count = %d, want 3", got)
+	}
+	output := logs.String()
+	for _, secret := range []string{"thread-1", "name=A", "forced rename rejected"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("name-sync error-path logs leaked %q: %s", secret, output)
+		}
 	}
 }
 

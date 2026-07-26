@@ -90,6 +90,42 @@ type desktopNameReassertSession struct {
 	release         <-chan struct{}
 }
 
+type desktopNameTOCTOUSession struct {
+	*controllableAgentSession
+	mu          sync.Mutex
+	oldName     string
+	oldStarted  bool
+	started     chan struct{}
+	releaseOld  <-chan struct{}
+	appliedName []string
+}
+
+func (s *desktopNameTOCTOUSession) ReassertSessionName(name string) error {
+	s.mu.Lock()
+	blockOld := name == s.oldName && !s.oldStarted
+	if blockOld {
+		s.oldStarted = true
+	}
+	s.mu.Unlock()
+	if blockOld {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+		<-s.releaseOld
+	}
+	s.mu.Lock()
+	s.appliedName = append(s.appliedName, name)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *desktopNameTOCTOUSession) names() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.appliedName...)
+}
+
 func (s *desktopNameReassertSession) ReassertSessionName(name string) error {
 	s.mu.Lock()
 	s.reassertedNames = append(s.reassertedNames, name)
@@ -569,6 +605,7 @@ func TestDesktopLiveSyncNameSerializesGenerationsForSameRoute(t *testing.T) {
 	}
 	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
 	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	engine.desktopNameReassertNow = func() time.Time { return now }
 	session := engine.sessions.NewSession(sessionKey, oldName)
 	session.SetAgentSessionID(sessionID, agent.Name())
 	engine.sessions.SetSessionName(sessionID, oldName)
@@ -632,6 +669,165 @@ func TestDesktopLiveSyncNameSerializesGenerationsForSameRoute(t *testing.T) {
 	engine.desktopSyncMu.Unlock()
 	if pending != 0 {
 		t.Fatalf("pending after latest generation success = %d, want 0", pending)
+	}
+}
+
+func TestDesktopLiveSyncNameWorkerClaimsOnlyOneDueRouteWhileRPCBlocks(t *testing.T) {
+	const (
+		slowSessionID  = "thread-name-worker-slow"
+		slowSessionKey = "wecom:g:name-worker-slow"
+		slowName       = "[企业微信-Codex] 慢命名群"
+		nextSessionID  = "thread-name-worker-next"
+		nextSessionKey = "wecom:g:name-worker-next"
+		nextName       = "[企业微信-Codex] 后续命名群"
+	)
+	now := time.Date(2026, 7, 26, 16, 0, 0, 0, time.Local)
+	runAt := now.Add(2 * time.Second)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             "desktop-name-sync",
+	}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	engine.desktopNameReassertNow = func() time.Time { return runAt }
+	slowRoute := engine.sessions.NewSession(slowSessionKey, slowName)
+	slowRoute.SetAgentSessionID(slowSessionID, agent.Name())
+	engine.sessions.SetSessionName(slowSessionID, slowName)
+	nextRoute := engine.sessions.NewSession(nextSessionKey, nextName)
+	nextRoute.SetAgentSessionID(nextSessionID, agent.Name())
+	engine.sessions.SetSessionName(nextSessionID, nextName)
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	slowLive := &desktopNameReassertSession{
+		controllableAgentSession: newControllableSession(slowSessionID),
+		started:                  started,
+		release:                  release,
+	}
+	nextLive := &desktopNameReassertSession{controllableAgentSession: newControllableSession(nextSessionID)}
+	engine.interactiveStates[slowSessionKey] = &interactiveState{agentSession: slowLive, agent: agent}
+	engine.interactiveStates[nextSessionKey] = &interactiveState{agentSession: nextLive, agent: agent}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	slowKey := desktopNameReassertKey{
+		sessions:   engine.sessions,
+		sessionID:  slowSessionID,
+		sessionKey: slowSessionKey,
+	}
+	nextKey := desktopNameReassertKey{
+		sessions:   engine.sessions,
+		sessionID:  nextSessionID,
+		sessionKey: nextSessionKey,
+	}
+	engine.desktopSyncMu.Lock()
+	engine.scheduleDesktopNameReassertLocked(slowKey, agent, slowSessionKey, slowName, now)
+	engine.scheduleDesktopNameReassertLocked(nextKey, agent, nextSessionKey, nextName, now.Add(time.Second))
+	engine.desktopSyncMu.Unlock()
+
+	workerDone := make(chan struct{})
+	go func() {
+		engine.processDueDesktopNameReasserts()
+		close(workerDone)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("timed out waiting for deterministic first name RPC")
+	}
+
+	engine.desktopSyncMu.Lock()
+	nextState, nextPending := engine.desktopNameReassertPending[nextKey]
+	nextInFlight := nextPending && nextState.inFlight
+	engine.desktopSyncMu.Unlock()
+	nextRanEarly := len(nextLive.names()) > 0
+	close(release)
+	select {
+	case <-workerDone:
+	case <-time.After(time.Second):
+		t.Fatal("name worker did not finish after releasing the first RPC")
+	}
+
+	if nextInFlight {
+		t.Fatal("later due route was marked in flight before the worker could execute it")
+	}
+	if nextRanEarly {
+		t.Fatal("later due route executed before the deterministically earlier slow route completed")
+	}
+	if got, want := nextLive.names(), []string{nextName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("later route reassertions after release = %#v, want %#v", got, want)
+	}
+}
+
+func TestDesktopLiveSyncNameCompensatesWhenUserRenameWinsValidationRace(t *testing.T) {
+	const (
+		sessionID  = "thread-name-user-race"
+		sessionKey = "wecom:g:name-user-race"
+		oldName    = "[企业微信-Codex] 旧后台名称"
+		newName    = "[企业微信-Codex] 用户新名称"
+	)
+	now := time.Date(2026, 7, 26, 16, 5, 0, 0, time.Local)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             "desktop-name-sync",
+	}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	engine.desktopNameReassertNow = func() time.Time { return now }
+	session := engine.sessions.NewSession(sessionKey, oldName)
+	session.SetAgentSessionID(sessionID, agent.Name())
+	engine.sessions.SetSessionName(sessionID, oldName)
+	started := make(chan struct{}, 1)
+	releaseOld := make(chan struct{})
+	live := &desktopNameTOCTOUSession{
+		controllableAgentSession: newControllableSession(sessionID),
+		oldName:                  oldName,
+		started:                  started,
+		releaseOld:               releaseOld,
+	}
+	engine.interactiveStates[sessionKey] = &interactiveState{agentSession: live, agent: agent}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	key := desktopNameReassertKey{
+		sessions:   engine.sessions,
+		sessionID:  sessionID,
+		sessionKey: sessionKey,
+	}
+	engine.desktopSyncMu.Lock()
+	engine.scheduleDesktopNameReassertLocked(key, agent, sessionKey, oldName, now)
+	engine.desktopSyncMu.Unlock()
+	workerDone := make(chan struct{})
+	go func() {
+		engine.processDueDesktopNameReasserts()
+		close(workerDone)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		close(releaseOld)
+		t.Fatal("timed out waiting for old background name RPC")
+	}
+
+	engine.sessions.SetSessionName(sessionID, newName)
+	if err := forceSyncRequiredAgentSessionName(live, newName); err != nil {
+		close(releaseOld)
+		t.Fatalf("apply user rename: %v", err)
+	}
+	close(releaseOld)
+	select {
+	case <-workerDone:
+	case <-time.After(time.Second):
+		t.Fatal("name worker did not finish after releasing the old RPC")
+	}
+
+	if got, want := live.names(), []string{newName, oldName, newName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("remote name writes = %#v, want user write, stale overwrite, compensation %#v", got, want)
+	}
+	engine.desktopSyncMu.Lock()
+	pending := len(engine.desktopNameReassertPending)
+	engine.desktopSyncMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("name pending after compensation = %d, want 0", pending)
 	}
 }
 

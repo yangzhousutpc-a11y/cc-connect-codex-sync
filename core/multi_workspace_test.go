@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 type namedTestAgent struct {
@@ -811,6 +812,104 @@ func TestDesktopLiveSyncWorkspaceNameMissingExactKeyRestoresWithoutBorrowing(t *
 	}
 	if got := agentB.startedSessionIDs(); len(got) != 0 {
 		t.Fatalf("workspace B unexpectedly restored: %#v", got)
+	}
+}
+
+func TestDesktopLiveSyncWorkspaceNameMovesRestoreRetryToRememberedExactKey(t *testing.T) {
+	const (
+		sessionID  = "thread-workspace-key-transition"
+		sessionKey = "wecom:g:workspace-key-transition"
+		customName = "[企业微信-Codex] 精确键迁移群"
+	)
+	now := time.Date(2026, 7, 26, 16, 15, 0, 0, time.Local)
+	workspace := normalizeWorkspacePath(t.TempDir())
+	rootAgent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             "desktop-name-root",
+	}
+	restored := &desktopNameReassertSession{
+		controllableAgentSession: newControllableSession(sessionID),
+		failures:                 1,
+	}
+	workspaceAgent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
+			sessionID: {{SessionID: sessionID, Role: "assistant", TurnCompleted: true}},
+		}},
+		name: "desktop-name-workspace",
+		startFunc: func(_ context.Context, targetID string) (AgentSession, error) {
+			if targetID != sessionID {
+				t.Fatalf("restore target = %q, want %q", targetID, sessionID)
+			}
+			return restored, nil
+		},
+	}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", rootAgent, []Platform{platform}, "", LangChinese)
+	engine.desktopNameReassertNow = func() time.Time { return now }
+	engine.SetMultiWorkspace(workspace, filepath.Join(t.TempDir(), "bindings.json"))
+	state := engine.workspacePool.GetOrCreate(workspace)
+	state.mu.Lock()
+	state.agent = workspaceAgent
+	state.sessions = NewSessionManager("")
+	sessions := state.sessions
+	state.mu.Unlock()
+	route := sessions.NewSession(sessionKey, customName)
+	route.SetAgentSessionID(sessionID, workspaceAgent.Name())
+	sessions.SetSessionName(sessionID, customName)
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	engine.pollDesktopLiveSync(context.Background(), rootAgent)
+	engine.processDueDesktopNameReasserts()
+
+	nameKey := desktopNameReassertKey{
+		sessions:   sessions,
+		sessionID:  sessionID,
+		sessionKey: sessionKey,
+	}
+	engine.desktopSyncMu.Lock()
+	retryState, retryPending := engine.desktopNameReassertPending[nameKey]
+	engine.desktopSyncMu.Unlock()
+	if !retryPending || retryState.attempts != 1 || retryState.interactiveKey != "" {
+		t.Fatalf("restore retry state = %+v, pending=%v; want one retry with empty interactive key", retryState, retryPending)
+	}
+
+	gotAgent, gotSessions, interactiveKey, effectiveDir, err := engine.workspaceContext(workspace, sessionKey)
+	if err != nil {
+		t.Fatalf("workspaceContext: %v", err)
+	}
+	if gotAgent != workspaceAgent || gotSessions != sessions || effectiveDir != workspace {
+		t.Fatalf(
+			"workspace context = agent:%T sessions_match:%v effective:%q, want existing workspace state",
+			gotAgent,
+			gotSessions == sessions,
+			effectiveDir,
+		)
+	}
+	live := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
+	engine.interactiveStates[interactiveKey] = &interactiveState{
+		agentSession: live,
+		platform:     platform,
+		replyCtx:     "ctx",
+		agent:        workspaceAgent,
+	}
+
+	engine.pollDesktopLiveSync(context.Background(), rootAgent)
+	engine.processDueDesktopNameReasserts()
+
+	if got, want := live.names(), []string{customName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("exact-key live reassertions = %#v, want %#v", got, want)
+	}
+	if got, want := workspaceAgent.startedSessionIDs(), []string{sessionID}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("restore attempts = %#v, want only initial transient restore %#v", got, want)
+	}
+	engine.desktopSyncMu.Lock()
+	pending := len(engine.desktopNameReassertPending)
+	engine.desktopSyncMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("name pending after exact-key success = %d, want 0", pending)
 	}
 }
 

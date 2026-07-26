@@ -452,7 +452,11 @@ func (e *Engine) pruneExpiredDesktopNameReassertsLocked(now time.Time) {
 
 func (e *Engine) collectDueDesktopNameReassertsLocked(now time.Time) []desktopNameReassertRequest {
 	e.pruneExpiredDesktopNameReassertsLocked(now)
-	requests := make([]desktopNameReassertRequest, 0, len(e.desktopNameReassertPending))
+	var (
+		selectedKey   desktopNameReassertKey
+		selectedState desktopNameReassertState
+		found         bool
+	)
 	for key, state := range e.desktopNameReassertPending {
 		if !e.desktopNameReassertRouteCurrent(key, state.name) {
 			delete(e.desktopNameReassertPending, key)
@@ -461,27 +465,43 @@ func (e *Engine) collectDueDesktopNameReassertsLocked(now time.Time) []desktopNa
 		if state.inFlight || state.nextAttempt.After(now) {
 			continue
 		}
-		state.inFlight = true
-		state.inFlightGen = state.generation
-		e.desktopNameReassertPending[key] = state
-		requests = append(requests, desktopNameReassertRequest{
-			key:            key,
-			agent:          state.agent,
-			interactiveKey: state.interactiveKey,
-			name:           state.name,
-			generation:     state.generation,
-		})
+		if !found ||
+			state.nextAttempt.Before(selectedState.nextAttempt) ||
+			(state.nextAttempt.Equal(selectedState.nextAttempt) &&
+				(state.createdAt.Before(selectedState.createdAt) ||
+					(state.createdAt.Equal(selectedState.createdAt) &&
+						state.generation < selectedState.generation))) {
+			selectedKey = key
+			selectedState = state
+			found = true
+		}
 	}
-	return requests
+	if !found {
+		return nil
+	}
+	selectedState.inFlight = true
+	selectedState.inFlightGen = selectedState.generation
+	e.desktopNameReassertPending[selectedKey] = selectedState
+	return []desktopNameReassertRequest{{
+		key:            selectedKey,
+		agent:          selectedState.agent,
+		interactiveKey: selectedState.interactiveKey,
+		name:           selectedState.name,
+		generation:     selectedState.generation,
+	}}
 }
 
 func (e *Engine) desktopNameReassertRouteCurrent(key desktopNameReassertKey, name string) bool {
+	return e.desktopNameReassertRouteSessionCurrent(key) &&
+		strings.TrimSpace(key.sessions.GetSessionName(key.sessionID)) == name
+}
+
+func (e *Engine) desktopNameReassertRouteSessionCurrent(key desktopNameReassertKey) bool {
 	if key.sessions == nil {
 		return false
 	}
 	routes := e.externalConversationRoutes(key.sessions.AgentSessionRoutes())
-	return routes[key.sessionID] == key.sessionKey &&
-		strings.TrimSpace(key.sessions.GetSessionName(key.sessionID)) == name
+	return routes[key.sessionID] == key.sessionKey
 }
 
 func (e *Engine) desktopNameReassertRequestCurrent(request desktopNameReassertRequest) bool {
@@ -520,6 +540,7 @@ func (e *Engine) commitDesktopNameReassertLocked(result desktopNameReassertResul
 	}
 	state.inFlight = false
 	state.inFlightGen = 0
+	e.desktopNameReassertPending[result.request.key] = state
 	if state.generation != result.request.generation {
 		if !e.desktopNameReassertRouteCurrent(result.request.key, state.name) {
 			delete(e.desktopNameReassertPending, result.request.key)
@@ -529,18 +550,31 @@ func (e *Engine) commitDesktopNameReassertLocked(result desktopNameReassertResul
 		e.desktopNameReassertPending[result.request.key] = state
 		return
 	}
-	if !result.attempted || !e.desktopNameReassertRouteCurrent(result.request.key, result.request.name) {
+	if !result.attempted || !e.desktopNameReassertRouteSessionCurrent(result.request.key) {
 		delete(e.desktopNameReassertPending, result.request.key)
-		return
-	}
-	if result.err == nil {
-		delete(e.desktopNameReassertPending, result.request.key)
-		slog.Info("desktop live sync name reasserted")
 		return
 	}
 	if errors.Is(result.err, ErrAgentSessionNameUnsupported) {
 		delete(e.desktopNameReassertPending, result.request.key)
 		slog.Warn("desktop live sync name reassert unsupported")
+		return
+	}
+	currentName := strings.TrimSpace(result.request.key.sessions.GetSessionName(result.request.key.sessionID))
+	if currentName != result.request.name {
+		if currentName == "" || !e.scheduleDesktopNameReassertLocked(
+			result.request.key,
+			state.agent,
+			state.interactiveKey,
+			currentName,
+			now,
+		) {
+			delete(e.desktopNameReassertPending, result.request.key)
+		}
+		return
+	}
+	if result.err == nil {
+		delete(e.desktopNameReassertPending, result.request.key)
+		slog.Info("desktop live sync name reasserted")
 		return
 	}
 	if state.createdAt.IsZero() || !now.Before(state.createdAt.Add(desktopNameReassertPendingTTL)) {
@@ -633,15 +667,13 @@ func (e *Engine) pruneDesktopSyncPending(
 		}
 		interactiveKey := desktopNameRouteInteractiveKey(workspace, sessions, key.sessionKey)
 		if !sameDesktopSyncAgent(state.agent, agent) || state.interactiveKey != interactiveKey {
-			if state.inFlight {
-				e.scheduleDesktopNameReassertLocked(
-					key,
-					agent,
-					interactiveKey,
-					sessions.GetSessionName(key.sessionID),
-					e.desktopNameReassertTime(),
-				)
-			} else {
+			if !e.scheduleDesktopNameReassertLocked(
+				key,
+				agent,
+				interactiveKey,
+				sessions.GetSessionName(key.sessionID),
+				e.desktopNameReassertTime(),
+			) {
 				delete(e.desktopNameReassertPending, key)
 			}
 		}

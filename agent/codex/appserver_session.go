@@ -546,7 +546,7 @@ func (s *appServerSession) setSessionName(name string, force bool) error {
 		return fmt.Errorf("codex app-server set thread name: %w", err)
 	}
 	s.sessionName = name
-	slog.Info("codex app-server thread name synced", "thread_id", threadID, "name", name)
+	slog.Info("codex app-server thread name synced")
 	s.refreshThread(threadID)
 	return nil
 }
