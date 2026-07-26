@@ -25,12 +25,18 @@ func normalizeWorkspacePath(path string) string {
 
 // workspaceState holds the runtime state for a single workspace.
 type workspaceState struct {
-	mu           sync.Mutex
-	workspace    string
-	sessions     *SessionManager
-	agent        Agent
-	lastActivity time.Time
-	activeTurns  int
+	mu              sync.Mutex
+	workspace       string
+	sessions        *SessionManager
+	agent           Agent
+	interactiveKeys map[workspaceInteractiveKey]string
+	lastActivity    time.Time
+	activeTurns     int
+}
+
+type workspaceInteractiveKey struct {
+	sessions   *SessionManager
+	sessionKey string
 }
 
 func newWorkspaceState(workspace string) *workspaceState {
@@ -38,6 +44,24 @@ func newWorkspaceState(workspace string) *workspaceState {
 		workspace:    workspace,
 		lastActivity: time.Now(),
 	}
+}
+
+func (ws *workspaceState) rememberInteractiveKey(sessions *SessionManager, sessionKey, interactiveKey string) {
+	if sessions == nil || sessionKey == "" || interactiveKey == "" {
+		return
+	}
+	ws.mu.Lock()
+	if ws.interactiveKeys == nil {
+		ws.interactiveKeys = make(map[workspaceInteractiveKey]string)
+	}
+	ws.interactiveKeys[workspaceInteractiveKey{sessions: sessions, sessionKey: sessionKey}] = interactiveKey
+	ws.mu.Unlock()
+}
+
+func (ws *workspaceState) interactiveKey(sessions *SessionManager, sessionKey string) string {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	return ws.interactiveKeys[workspaceInteractiveKey{sessions: sessions, sessionKey: sessionKey}]
 }
 
 func (ws *workspaceState) Touch() {

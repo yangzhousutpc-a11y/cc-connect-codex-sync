@@ -711,7 +711,7 @@ func TestCommandContextWithWorkspace_UnboundChannelFallsBack(t *testing.T) {
 	}
 }
 
-func TestDesktopLiveSyncWorkspaceNameUsesExactInteractiveKeyForDuplicateThreadID(t *testing.T) {
+func TestDesktopLiveSyncWorkspaceNameMissingExactKeyRestoresWithoutBorrowing(t *testing.T) {
 	const (
 		sessionID  = "thread-shared-across-workspaces"
 		sessionKey = "wecom:g:shared-route"
@@ -733,11 +733,18 @@ func TestDesktopLiveSyncWorkspaceNameUsesExactInteractiveKeyForDuplicateThreadID
 		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
 		name:             "desktop-name-root",
 	}
+	restoredA := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
 	agentA := &desktopNameSyncAgent{
 		desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
 			sessionID: {{SessionID: sessionID, Role: "assistant", TurnCompleted: true}},
 		}},
 		name: "desktop-name-workspace-a",
+		startFunc: func(_ context.Context, targetID string) (AgentSession, error) {
+			if targetID != sessionID {
+				t.Fatalf("restore target = %q, want %q", targetID, sessionID)
+			}
+			return restoredA, nil
+		},
 	}
 	agentB := &desktopNameSyncAgent{
 		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
@@ -788,18 +795,98 @@ func TestDesktopLiveSyncWorkspaceNameUsesExactInteractiveKeyForDuplicateThreadID
 	t.Cleanup(func() { _ = engine.Stop() })
 
 	engine.pollDesktopLiveSync(context.Background(), rootAgent)
+	engine.processDueDesktopNameReasserts()
 
-	if got, want := liveA.names(), []string{nameA}; !equalDesktopSyncStrings(got, want) {
-		t.Fatalf("workspace A reassertions = %#v, want %#v", got, want)
+	if got := liveA.names(); len(got) != 0 {
+		t.Fatalf("workspace A live state was used without an exact key mapping: %#v", got)
 	}
 	if got := liveB.names(); len(got) != 0 {
 		t.Fatalf("workspace B was borrowed for A route: %#v", got)
 	}
-	if got := agentA.startedSessionIDs(); len(got) != 0 {
-		t.Fatalf("workspace A unexpectedly restored instead of reusing exact live state: %#v", got)
+	if got, want := agentA.startedSessionIDs(), []string{sessionID}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("workspace A restore IDs = %#v, want %#v", got, want)
+	}
+	if got, want := restoredA.names(), []string{nameA}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("workspace A restored reassertions = %#v, want %#v", got, want)
 	}
 	if got := agentB.startedSessionIDs(); len(got) != 0 {
 		t.Fatalf("workspace B unexpectedly restored: %#v", got)
+	}
+}
+
+func TestDesktopLiveSyncWorkspaceDirOverrideUsesBaseInteractiveKey(t *testing.T) {
+	const (
+		sessionID  = "thread-workspace-dir-override"
+		sessionKey = "wecom:g:workspace-dir-override"
+		customName = "[企业微信-Codex] 目录覆盖群"
+		agentName  = "desktop-name-workspace-dir-override"
+	)
+	baseWorkspace := normalizeWorkspacePath(t.TempDir())
+	effectiveDir := filepath.Join(baseWorkspace, "effective")
+	if err := os.MkdirAll(effectiveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	effectiveDir = normalizeWorkspacePath(effectiveDir)
+	interactiveKey := baseWorkspace + ":" + sessionKey
+
+	var workspaceAgent *desktopNameSyncAgent
+	RegisterAgent(agentName, func(map[string]any) (Agent, error) {
+		workspaceAgent = &desktopNameSyncAgent{
+			desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
+				sessionID: {{SessionID: sessionID, Role: "assistant", TurnCompleted: true}},
+			}},
+			name: agentName,
+		}
+		return workspaceAgent, nil
+	})
+	rootAgent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             agentName,
+	}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", rootAgent, []Platform{platform}, "", LangChinese)
+	engine.SetMultiWorkspace(baseWorkspace, filepath.Join(t.TempDir(), "bindings.json"))
+	store := NewProjectStateStore(filepath.Join(t.TempDir(), "projects", "test.state.json"))
+	store.SetWorkspaceDirOverride(interactiveKey, effectiveDir)
+	store.Save()
+	engine.SetProjectStateStore(store)
+
+	gotAgent, sessions, gotInteractiveKey, gotEffectiveDir, err := engine.workspaceContext(baseWorkspace, sessionKey)
+	if err != nil {
+		t.Fatalf("workspaceContext: %v", err)
+	}
+	if gotAgent != workspaceAgent {
+		t.Fatalf("workspace agent = %T, want registered exact agent", gotAgent)
+	}
+	if gotInteractiveKey != interactiveKey {
+		t.Fatalf("interactive key = %q, want base-workspace key %q", gotInteractiveKey, interactiveKey)
+	}
+	if gotEffectiveDir != effectiveDir {
+		t.Fatalf("effective dir = %q, want %q", gotEffectiveDir, effectiveDir)
+	}
+	route := sessions.NewSession(sessionKey, customName)
+	route.SetAgentSessionID(sessionID, agentName)
+	sessions.SetSessionName(sessionID, customName)
+	live := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
+	engine.interactiveStates[interactiveKey] = &interactiveState{
+		agentSession: live,
+		platform:     platform,
+		replyCtx:     "ctx",
+		agent:        workspaceAgent,
+	}
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	engine.pollDesktopLiveSync(context.Background(), rootAgent)
+	engine.processDueDesktopNameReasserts()
+
+	if got, want := live.names(), []string{customName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("dir-override live reassertions = %#v, want %#v", got, want)
+	}
+	if got := workspaceAgent.startedSessionIDs(); len(got) != 0 {
+		t.Fatalf("dir-override route restored instead of reusing exact live key: %#v", got)
 	}
 }
 

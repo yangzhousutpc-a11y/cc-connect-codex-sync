@@ -454,6 +454,7 @@ type Engine struct {
 	stopping                      bool
 	desktopSyncMu                 sync.Mutex
 	desktopSyncPending            map[desktopSyncPendingKey][]ExternalConversationEvent
+	desktopSyncCompletionPending  map[desktopSyncPendingKey]desktopSyncCompletionState
 	desktopNameReassertPending    map[desktopNameReassertKey]desktopNameReassertState
 	desktopNameReassertGeneration uint64
 	desktopNameReassertNow        func() time.Time
@@ -3855,10 +3856,12 @@ func syncAgentSessionName(session AgentSession, name string) error {
 	return nil
 }
 
+var ErrAgentSessionNameUnsupported = errors.New("agent session does not support renaming")
+
 func syncRequiredAgentSessionName(session AgentSession, name string) error {
 	namer, ok := session.(AgentSessionNamer)
 	if !ok {
-		return fmt.Errorf("agent session does not support renaming")
+		return ErrAgentSessionNameUnsupported
 	}
 	return namer.SetSessionName(strings.TrimSpace(name))
 }
@@ -4014,6 +4017,11 @@ func (e *Engine) workspaceContext(workspace, sessionKey string) (Agent, *Session
 	wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(effectiveDir)
 	if err != nil {
 		return nil, nil, "", "", err
+	}
+	if e.workspacePool != nil {
+		if state := e.workspacePool.Get(effectiveDir); state != nil {
+			state.rememberInteractiveKey(wsSessions, sessionKey, interactiveKey)
+		}
 	}
 	return wsAgent, wsSessions, interactiveKey, effectiveDir, nil
 }
