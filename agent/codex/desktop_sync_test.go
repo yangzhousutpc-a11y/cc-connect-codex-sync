@@ -199,6 +199,165 @@ func TestDesktopDeferredTurnCompletedMatchesResolvedExternalTurn(t *testing.T) {
 	}
 }
 
+func TestDesktopTaskCompleteUsesTurnIDForInternalThenExternalInterleaving(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	a.desktopOrigins.register(threadID, "turn-internal-a")
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-internal-a"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"internal request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-external-b"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"external request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-internal-a","last_agent_message":"internal response"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-external-b","last_agent_message":"external response"}}`,
+	)
+
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "external request"},
+		{SessionID: threadID, Role: "assistant", Content: "external response", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
+func TestDesktopTaskCompleteUsesTurnIDForExternalThenInternalInterleaving(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	a.desktopOrigins.register(threadID, "turn-internal-b")
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-external-a"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"external request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-internal-b"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"internal request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-internal-b","last_agent_message":"internal response"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-external-a","last_agent_message":"external response"}}`,
+	)
+
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "external request"},
+		{SessionID: threadID, Role: "assistant", Content: "external response", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
+func TestDesktopDeferredAndDirectTurnsCompleteOnceByTurnID(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	ticket := a.desktopOrigins.begin(threadID)
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-deferred-a"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"deferred request"}}`,
+	)
+	if events, err := a.PollExternalConversation(context.Background(), threadID); err != nil || len(events) != 0 {
+		t.Fatalf("pending events = %#v, %v; want deferred", events, err)
+	}
+
+	a.desktopOrigins.cancel(ticket)
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-direct-b"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"direct request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-direct-b","last_agent_message":"direct response"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-deferred-a","last_agent_message":"deferred response"}}`,
+	)
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "direct request"},
+		{SessionID: threadID, Role: "assistant", Content: "direct response", TurnCompleted: true},
+		{SessionID: threadID, Role: "user", Content: "deferred request"},
+		{SessionID: threadID, Role: "assistant", Content: "deferred response", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-direct-b","last_agent_message":"duplicate direct response"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-deferred-a","last_agent_message":"duplicate deferred response"}}`,
+	)
+	if events, err := a.PollExternalConversation(context.Background(), threadID); err != nil || len(events) != 0 {
+		t.Fatalf("events after completed turns = %#v, %v; want none", events, err)
+	}
+}
+
+func TestDesktopTaskCompleteIgnoresUnknownAndNoUserTurnIDs(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-external-a"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"external request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-unknown","last_agent_message":"unknown response"}}`,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-no-user-b"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-no-user-b","last_agent_message":"no-user response"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-external-a","last_agent_message":"external response"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-external-a","last_agent_message":"duplicate response"}}`,
+	)
+
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "external request"},
+		{SessionID: threadID, Role: "assistant", Content: "external response", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-legacy-c"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"legacy request"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"legacy response"}}`,
+	)
+	events, err = a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "legacy request"},
+		{SessionID: threadID, Role: "assistant", Content: "legacy response", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("legacy events after completed turns = %#v, want %#v", events, want)
+	}
+}
+
+func TestDesktopTaskCompleteWithoutTurnIDFailsSafeWhenAmbiguous(t *testing.T) {
+	a, transcript, threadID := newCompatibilityPollFixture(t)
+	appendTranscript(t, transcript,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-external-a"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"request a"}}`,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-external-b"}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"request b"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"ambiguous response"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-external-a","last_agent_message":"response a"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-external-b","last_agent_message":"response b"}}`,
+	)
+
+	events, err := a.PollExternalConversation(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ExternalConversationEvent{
+		{SessionID: threadID, Role: "user", Content: "request a"},
+		{SessionID: threadID, Role: "user", Content: "request b"},
+		{SessionID: threadID, Role: "assistant", Content: "response a", TurnCompleted: true},
+		{SessionID: threadID, Role: "assistant", Content: "response b", TurnCompleted: true},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
 func TestPollExternalConversationOnlyReturnsCodexAppTurns(t *testing.T) {
 	codexHome := t.TempDir()
 	sessionsDir := filepath.Join(codexHome, "sessions", "2026", "07", "21")

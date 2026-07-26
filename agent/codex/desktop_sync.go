@@ -21,16 +21,29 @@ type desktopPollState struct {
 	path                 string
 	offset               int64
 	initialized          bool
-	externalTurn         bool
-	deferredTurn         bool
-	deferredUser         desktopRawUserEvent
+	latestTurnID         string
+	turns                map[string]*desktopInFlightTurn
+	legacyTurn           *desktopInFlightTurn
 	deferred             []desktopDeferredTurn
-	turnID               string
 	lastLookup           time.Time
-	sawTaskStarted       bool
-	sawUserMessage       bool
-	unsafeTurn           bool
 	compatibilityHealthy bool
+}
+
+type desktopTurnOrigin uint8
+
+const (
+	desktopTurnUnknown desktopTurnOrigin = iota
+	desktopTurnUnsafe
+	desktopTurnInternal
+	desktopTurnExternal
+	desktopTurnDeferred
+)
+
+type desktopInFlightTurn struct {
+	user           desktopRawUserEvent
+	origin         desktopTurnOrigin
+	sawTaskStarted bool
+	sawUserMessage bool
 }
 
 type desktopDeferredTurn struct {
@@ -42,6 +55,80 @@ type desktopDeferredTurn struct {
 type desktopRawUserEvent struct {
 	message     string
 	localImages []string
+}
+
+func (s *desktopPollState) startTurn(turnID string) {
+	turnID = strings.TrimSpace(turnID)
+	s.latestTurnID = turnID
+	turn := &desktopInFlightTurn{sawTaskStarted: true}
+	if turnID == "" {
+		s.legacyTurn = turn
+		return
+	}
+	if s.turns == nil {
+		s.turns = make(map[string]*desktopInFlightTurn)
+	}
+	s.turns[turnID] = turn
+}
+
+func (s *desktopPollState) currentTurn() (string, *desktopInFlightTurn) {
+	// user_message does not carry turn_id, so it belongs to the most recent
+	// task_started event that has not already completed.
+	if s.latestTurnID != "" {
+		if turn := s.turns[s.latestTurnID]; turn != nil {
+			return s.latestTurnID, turn
+		}
+		s.latestTurnID = ""
+	}
+	if s.legacyTurn == nil {
+		s.legacyTurn = &desktopInFlightTurn{}
+	}
+	return "", s.legacyTurn
+}
+
+func (s *desktopPollState) takeCompletedTurn(turnID string) (string, *desktopInFlightTurn, bool) {
+	turnID = strings.TrimSpace(turnID)
+	if turnID != "" {
+		turn, ok := s.turns[turnID]
+		if !ok {
+			return "", nil, false
+		}
+		delete(s.turns, turnID)
+		if s.latestTurnID == turnID {
+			s.latestTurnID = ""
+		}
+		return turnID, turn, true
+	}
+
+	// Legacy task_complete events omit turn_id. Consume one only when the
+	// association is unambiguous; otherwise fail closed and preserve keyed turns.
+	candidates := len(s.turns)
+	if s.legacyTurn != nil {
+		candidates++
+	}
+	if candidates != 1 {
+		return "", nil, false
+	}
+	if s.legacyTurn != nil {
+		turn := s.legacyTurn
+		s.legacyTurn = nil
+		return "", turn, true
+	}
+	for candidateID, turn := range s.turns {
+		delete(s.turns, candidateID)
+		if s.latestTurnID == candidateID {
+			s.latestTurnID = ""
+		}
+		return candidateID, turn, true
+	}
+	return "", nil, false
+}
+
+func (s *desktopPollState) resetTurns() {
+	s.latestTurnID = ""
+	s.turns = nil
+	s.legacyTurn = nil
+	s.deferred = nil
 }
 
 type desktopRolloutEvent struct {
@@ -399,14 +486,7 @@ func (a *Agent) PollExternalConversation(_ context.Context, sessionID string) ([
 	if !state.initialized || info.Size() < state.offset {
 		state.offset = info.Size()
 		state.initialized = true
-		state.externalTurn = false
-		state.deferredTurn = false
-		state.deferredUser = desktopRawUserEvent{}
-		state.deferred = nil
-		state.turnID = ""
-		state.sawTaskStarted = false
-		state.sawUserMessage = false
-		state.unsafeTurn = false
+		state.resetTurns()
 		return events, nil
 	}
 	if info.Size() == state.offset {
@@ -446,27 +526,19 @@ func (a *Agent) PollExternalConversation(_ context.Context, sessionID string) ([
 		}
 		switch rollout.Payload.Type {
 		case "task_started":
-			state.turnID = strings.TrimSpace(rollout.Payload.TurnID)
-			state.sawTaskStarted = true
-			state.sawUserMessage = false
-			state.unsafeTurn = false
-			state.externalTurn = false
-			state.deferredTurn = false
-			state.deferredUser = desktopRawUserEvent{}
+			state.startTurn(rollout.Payload.TurnID)
 		case "user_message":
 			clientID := strings.TrimSpace(rollout.Payload.ClientID)
-			if state.turnID == "" && clientID == "" {
-				state.unsafeTurn = true
-				state.externalTurn = false
-				state.deferredTurn = false
-				state.deferredUser = desktopRawUserEvent{}
+			turnID, turn := state.currentTurn()
+			turn.sawUserMessage = true
+			if turnID == "" && clientID == "" {
+				turn.origin = desktopTurnUnsafe
 				recordCompatibilityChange(a.compatibility.incompatibleState("unsafe_turn_identity"))
 				continue
 			}
-			state.sawUserMessage = true
-			internal, pending := a.desktopOrigins.classify(sessionID, state.turnID)
+			internal, pending := a.desktopOrigins.classify(sessionID, turnID)
 			if internal {
-				state.externalTurn = false
+				turn.origin = desktopTurnInternal
 				continue
 			}
 			rawUser := desktopRawUserEvent{
@@ -474,58 +546,46 @@ func (a *Agent) PollExternalConversation(_ context.Context, sessionID string) ([
 				localImages: append([]string(nil), rollout.Payload.LocalImages...),
 			}
 			if clientID == "" && pending {
-				state.deferredTurn = true
-				state.deferredUser = rawUser
+				turn.origin = desktopTurnDeferred
+				turn.user = rawUser
 				continue
 			}
-			state.externalTurn = true
+			turn.origin = desktopTurnExternal
 			userEvent := materializeDesktopUserEvent(sessionID, rawUser)
 			if desktopEventHasContent(userEvent) {
 				events = append(events, userEvent)
 			}
 		case "task_complete":
+			turnID, turn, ok := state.takeCompletedTurn(rollout.Payload.TurnID)
+			if !ok {
+				continue
+			}
 			assistant := strings.TrimSpace(rollout.Payload.LastAgentMessage)
-			if state.unsafeTurn {
-				state.turnID = ""
-				state.sawTaskStarted = false
-				state.sawUserMessage = false
-				state.unsafeTurn = false
-				state.externalTurn = false
+			if turn.origin == desktopTurnUnsafe {
 				continue
 			}
-			supportedSequence := state.sawTaskStarted && state.sawUserMessage
-			if state.deferredTurn {
-				internal, pending := a.desktopOrigins.classify(sessionID, state.turnID)
-				switch {
-				case internal:
-				case pending:
-					state.deferred = append(state.deferred, desktopDeferredTurn{turnID: state.turnID, user: state.deferredUser, assistant: assistant})
-				default:
-					events = appendDesktopTurnEvents(events, materializeDesktopUserEvent(sessionID, state.deferredUser), assistant)
-				}
-				state.turnID = ""
-				state.deferredTurn = false
-				state.deferredUser = desktopRawUserEvent{}
-				state.sawTaskStarted = false
-				state.sawUserMessage = false
-				if supportedSequence {
-					state.compatibilityHealthy = true
-					recordCompatibilityChange(a.compatibility.supportedTurnState())
-				}
-				continue
-			}
-			state.turnID = ""
-			state.sawTaskStarted = false
-			state.sawUserMessage = false
-			if supportedSequence {
+			if turn.sawTaskStarted && turn.sawUserMessage {
 				state.compatibilityHealthy = true
 				recordCompatibilityChange(a.compatibility.supportedTurnState())
 			}
-			if !state.externalTurn {
+			if !turn.sawUserMessage {
 				continue
 			}
-			state.externalTurn = false
-			events = appendDesktopCompletionEvent(events, sessionID, assistant)
+			switch turn.origin {
+			case desktopTurnInternal:
+				continue
+			case desktopTurnDeferred:
+				internal, pending := a.desktopOrigins.classify(sessionID, turnID)
+				switch {
+				case internal:
+				case pending:
+					state.deferred = append(state.deferred, desktopDeferredTurn{turnID: turnID, user: turn.user, assistant: assistant})
+				default:
+					events = appendDesktopTurnEvents(events, materializeDesktopUserEvent(sessionID, turn.user), assistant)
+				}
+			case desktopTurnExternal:
+				events = appendDesktopCompletionEvent(events, sessionID, assistant)
+			}
 		}
 	}
 	state.offset = offset
