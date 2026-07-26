@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type desktopSyncFailingPlatform struct{ desktopSyncPlatform }
@@ -45,6 +48,86 @@ type trackingDesktopSyncAgent struct {
 	pollCalls []string
 }
 
+type desktopNameSyncAgent struct {
+	*desktopSyncAgent
+	name      string
+	startMu   sync.Mutex
+	startIDs  []string
+	startFunc func(context.Context, string) (AgentSession, error)
+}
+
+func (a *desktopNameSyncAgent) Name() string { return a.name }
+
+func (a *desktopNameSyncAgent) StartSession(ctx context.Context, sessionID string) (AgentSession, error) {
+	a.startMu.Lock()
+	a.startIDs = append(a.startIDs, sessionID)
+	a.startMu.Unlock()
+	if a.startFunc == nil {
+		return nil, errors.New("unexpected desktop name restore")
+	}
+	return a.startFunc(ctx, sessionID)
+}
+
+func (a *desktopNameSyncAgent) setEvents(sessionID string, events []ExternalConversationEvent) {
+	a.mu.Lock()
+	a.events[sessionID] = events
+	a.mu.Unlock()
+}
+
+func (a *desktopNameSyncAgent) startedSessionIDs() []string {
+	a.startMu.Lock()
+	defer a.startMu.Unlock()
+	return append([]string(nil), a.startIDs...)
+}
+
+type desktopNameReassertSession struct {
+	*controllableAgentSession
+	mu              sync.Mutex
+	reassertedNames []string
+	failures        int
+	onReassert      func()
+	started         chan struct{}
+	release         <-chan struct{}
+}
+
+func (s *desktopNameReassertSession) ReassertSessionName(name string) error {
+	s.mu.Lock()
+	s.reassertedNames = append(s.reassertedNames, name)
+	fail := s.failures > 0
+	if fail {
+		s.failures--
+	}
+	s.mu.Unlock()
+	if s.onReassert != nil {
+		s.onReassert()
+	}
+	if s.started != nil {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+	}
+	if s.release != nil {
+		<-s.release
+	}
+	if fail {
+		return errors.New("transient desktop name reassert failure")
+	}
+	return nil
+}
+
+func (s *desktopNameReassertSession) names() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.reassertedNames...)
+}
+
+func (s *desktopNameReassertSession) setFailures(failures int) {
+	s.mu.Lock()
+	s.failures = failures
+	s.mu.Unlock()
+}
+
 func (a *trackingDesktopSyncAgent) SetExternalConversationRoutes(sessionIDs []string) {
 	a.routeSets = append(a.routeSets, append([]string(nil), sessionIDs...))
 }
@@ -56,6 +139,688 @@ func (a *trackingDesktopSyncAgent) PollExternalConversation(ctx context.Context,
 
 func (p *desktopSyncFailingPlatform) Send(context.Context, any, string) error {
 	return errors.New("send failed")
+}
+
+func TestDesktopLiveSyncNameWaitsForCompletionAndReassertsOnce(t *testing.T) {
+	const (
+		sessionID  = "thread-name-complete"
+		sessionKey = "wecom:g:name-complete"
+		customName = "[企业微信-Codex] 名称重申群"
+	)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             "desktop-name-sync",
+	}
+	live := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	session := engine.sessions.NewSession(sessionKey, customName)
+	session.SetAgentSessionID(sessionID, agent.Name())
+	engine.sessions.SetSessionName(sessionID, customName)
+	engine.interactiveStates[sessionKey] = &interactiveState{
+		agentSession: live,
+		platform:     platform,
+		replyCtx:     "ctx",
+		agent:        agent,
+	}
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	agent.setEvents(sessionID, []ExternalConversationEvent{{
+		SessionID: sessionID,
+		Role:      "user",
+		Content:   "App 用户消息",
+	}})
+	engine.pollDesktopLiveSync(context.Background(), agent)
+	if got := live.names(); len(got) != 0 {
+		t.Fatalf("user phase reassertions = %#v, want none before completion", got)
+	}
+
+	agent.setEvents(sessionID, []ExternalConversationEvent{{
+		SessionID:     sessionID,
+		Role:          "assistant",
+		Content:       "App 助手回复",
+		TurnCompleted: true,
+	}})
+	engine.pollDesktopLiveSync(context.Background(), agent)
+	engine.pollDesktopLiveSync(context.Background(), agent)
+
+	if got, want := live.names(), []string{customName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("completion reassertions = %#v, want %#v", got, want)
+	}
+	if got := agent.startedSessionIDs(); len(got) != 0 {
+		t.Fatalf("live route unexpectedly restored sessions: %#v", got)
+	}
+	platform.mu.Lock()
+	delivered := append([]string(nil), platform.sent...)
+	platform.mu.Unlock()
+	if got, want := delivered, []string{"Codex App · 你\nApp 用户消息", "Codex · 回复\nApp 助手回复"}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("delivered messages = %#v, want %#v", got, want)
+	}
+}
+
+func TestDesktopLiveSyncNameReassertsForEmptyCompletionWithoutEmptyRelay(t *testing.T) {
+	const (
+		sessionID  = "thread-name-cancelled"
+		sessionKey = "wecom:g:name-cancelled"
+		customName = "[企业微信-Codex] 取消回合群"
+	)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
+			sessionID: {{SessionID: sessionID, Role: "assistant", TurnCompleted: true}},
+		}},
+		name: "desktop-name-sync",
+	}
+	live := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	session := engine.sessions.NewSession(sessionKey, customName)
+	session.SetAgentSessionID(sessionID, agent.Name())
+	engine.sessions.SetSessionName(sessionID, customName)
+	engine.interactiveStates[sessionKey] = &interactiveState{
+		agentSession: live,
+		platform:     platform,
+		replyCtx:     "ctx",
+		agent:        agent,
+	}
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	engine.pollDesktopLiveSync(context.Background(), agent)
+
+	if got, want := live.names(), []string{customName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("empty completion reassertions = %#v, want %#v", got, want)
+	}
+	platform.mu.Lock()
+	defer platform.mu.Unlock()
+	if len(platform.sent) != 0 {
+		t.Fatalf("empty completion relayed messages = %#v, want none", platform.sent)
+	}
+}
+
+func TestDesktopLiveSyncNameRestoresOriginalSessionIDWithoutLiveState(t *testing.T) {
+	const (
+		sessionID  = "thread-name-restore"
+		sessionKey = "wecom:g:name-restore"
+		customName = "[企业微信-Codex] 恢复原会话群"
+	)
+	restored := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
+			sessionID: {{SessionID: sessionID, Role: "assistant", TurnCompleted: true}},
+		}},
+		name: "desktop-name-sync",
+		startFunc: func(_ context.Context, targetID string) (AgentSession, error) {
+			if targetID != sessionID {
+				t.Fatalf("restore target = %q, want original %q", targetID, sessionID)
+			}
+			return restored, nil
+		},
+	}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	session := engine.sessions.NewSession(sessionKey, customName)
+	session.SetAgentSessionID(sessionID, agent.Name())
+	engine.sessions.SetSessionName(sessionID, customName)
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	engine.pollDesktopLiveSync(context.Background(), agent)
+
+	if got, want := agent.startedSessionIDs(), []string{sessionID}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("restored session IDs = %#v, want %#v", got, want)
+	}
+	if got, want := restored.names(), []string{customName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("restored reassertions = %#v, want %#v", got, want)
+	}
+	select {
+	case <-restored.closed:
+	default:
+		t.Fatal("temporary restored session was not closed")
+	}
+	if got := session.GetAgentSessionID(); got != sessionID {
+		t.Fatalf("route rebound to %q, want unchanged %q", got, sessionID)
+	}
+}
+
+func TestDesktopLiveSyncNameMismatchedLiveStateRestoresOriginalSessionID(t *testing.T) {
+	const (
+		sessionID  = "thread-name-original"
+		sessionKey = "wecom:g:name-mismatched-live"
+		customName = "[企业微信-Codex] 原会话群"
+	)
+	mismatched := &desktopNameReassertSession{controllableAgentSession: newControllableSession("thread-other")}
+	restored := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             "desktop-name-sync",
+		startFunc: func(_ context.Context, targetID string) (AgentSession, error) {
+			if targetID != sessionID {
+				t.Fatalf("restore target = %q, want original %q", targetID, sessionID)
+			}
+			return restored, nil
+		},
+	}
+	engine := NewEngine("test", agent, nil, "", LangChinese)
+	engine.interactiveStates[sessionKey] = &interactiveState{
+		agentSession: mismatched,
+		agent:        agent,
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	if err := engine.reassertDesktopSessionName(agent, sessionID, sessionKey, customName); err != nil {
+		t.Fatalf("reassert mismatched live state: %v", err)
+	}
+
+	if got := mismatched.names(); len(got) != 0 {
+		t.Fatalf("mismatched live session was borrowed: %#v", got)
+	}
+	if got, want := agent.startedSessionIDs(), []string{sessionID}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("restored session IDs = %#v, want %#v", got, want)
+	}
+	if got, want := restored.names(), []string{customName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("restored reassertions = %#v, want %#v", got, want)
+	}
+	select {
+	case <-restored.closed:
+	default:
+		t.Fatal("temporary restored session was not closed")
+	}
+}
+
+func TestDesktopLiveSyncNameFailureRetriesWithoutNewEventsOrMessageReplay(t *testing.T) {
+	const (
+		sessionID  = "thread-name-retry"
+		sessionKey = "wecom:g:name-retry"
+		customName = "[企业微信-Codex] 重试群"
+	)
+	now := time.Date(2026, 7, 26, 15, 0, 0, 0, time.Local)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
+			sessionID: {
+				{SessionID: sessionID, Role: "user", Content: "一次用户消息"},
+				{SessionID: sessionID, Role: "assistant", Content: "一次助手回复", TurnCompleted: true},
+			},
+		}},
+		name: "desktop-name-sync",
+	}
+	live := &desktopNameReassertSession{
+		controllableAgentSession: newControllableSession(sessionID),
+		failures:                 1,
+	}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	engine.desktopNameReassertNow = func() time.Time { return now }
+	session := engine.sessions.NewSession(sessionKey, customName)
+	session.SetAgentSessionID(sessionID, agent.Name())
+	engine.sessions.SetSessionName(sessionID, customName)
+	engine.interactiveStates[sessionKey] = &interactiveState{
+		agentSession: live,
+		platform:     platform,
+		replyCtx:     "ctx",
+		agent:        agent,
+	}
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	engine.pollDesktopLiveSync(context.Background(), agent)
+
+	if got, want := live.names(), []string{customName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("initial reassertions = %#v, want %#v", got, want)
+	}
+	engine.desktopSyncMu.Lock()
+	if got := len(engine.desktopNameReassertPending); got != 1 {
+		engine.desktopSyncMu.Unlock()
+		t.Fatalf("name pending after failure = %d, want 1", got)
+	}
+	if got := len(engine.desktopSyncPending); got != 0 {
+		engine.desktopSyncMu.Unlock()
+		t.Fatalf("message pending after name failure = %d, want 0", got)
+	}
+	var retryAt time.Time
+	for _, state := range engine.desktopNameReassertPending {
+		if state.attempts != 1 {
+			engine.desktopSyncMu.Unlock()
+			t.Fatalf("name attempts after failure = %d, want 1", state.attempts)
+		}
+		retryAt = state.nextAttempt
+	}
+	engine.desktopSyncMu.Unlock()
+
+	platform.mu.Lock()
+	deliveredBeforeRetry := append([]string(nil), platform.sent...)
+	platform.mu.Unlock()
+	wantDelivered := []string{"Codex App · 你\n一次用户消息", "Codex · 回复\n一次助手回复"}
+	if !equalDesktopSyncStrings(deliveredBeforeRetry, wantDelivered) {
+		t.Fatalf("initial delivery = %#v, want %#v", deliveredBeforeRetry, wantDelivered)
+	}
+
+	live.setFailures(0)
+	now = retryAt
+	engine.pollDesktopLiveSync(context.Background(), agent)
+	engine.pollDesktopLiveSync(context.Background(), agent)
+
+	if got, want := live.names(), []string{customName, customName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("retry reassertions = %#v, want %#v", got, want)
+	}
+	engine.desktopSyncMu.Lock()
+	pendingAfterSuccess := len(engine.desktopNameReassertPending)
+	engine.desktopSyncMu.Unlock()
+	if pendingAfterSuccess != 0 {
+		t.Fatalf("name pending after success = %d, want 0", pendingAfterSuccess)
+	}
+	platform.mu.Lock()
+	deliveredAfterRetry := append([]string(nil), platform.sent...)
+	platform.mu.Unlock()
+	if !equalDesktopSyncStrings(deliveredAfterRetry, wantDelivered) {
+		t.Fatalf("delivery after name retry = %#v, want no message replay %#v", deliveredAfterRetry, wantDelivered)
+	}
+}
+
+func TestDesktopLiveSyncNameNewGenerationSupersedesCollectedRequest(t *testing.T) {
+	const (
+		sessionID  = "thread-name-generation"
+		sessionKey = "wecom:g:name-generation"
+		customName = "[企业微信-Codex] 新一代重申群"
+	)
+	now := time.Date(2026, 7, 26, 15, 30, 0, 0, time.Local)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             "desktop-name-sync",
+	}
+	live := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	session := engine.sessions.NewSession(sessionKey, customName)
+	session.SetAgentSessionID(sessionID, agent.Name())
+	engine.sessions.SetSessionName(sessionID, customName)
+	engine.interactiveStates[sessionKey] = &interactiveState{
+		agentSession: live,
+		platform:     platform,
+		replyCtx:     "ctx",
+		agent:        agent,
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	key := desktopNameReassertKey{sessions: engine.sessions, sessionID: sessionID, sessionKey: sessionKey}
+	engine.desktopSyncMu.Lock()
+	engine.scheduleDesktopNameReassertLocked(key, agent, sessionKey, customName, now)
+	first := engine.collectDueDesktopNameReassertsLocked(now)
+	engine.scheduleDesktopNameReassertLocked(key, agent, sessionKey, customName, now)
+	engine.desktopSyncMu.Unlock()
+	if len(first) != 1 {
+		t.Fatalf("first collected requests = %d, want 1", len(first))
+	}
+
+	staleResult := engine.executeDesktopNameReassert(first[0])
+	if staleResult.attempted {
+		t.Fatal("superseded generation executed a stale name RPC")
+	}
+	engine.desktopSyncMu.Lock()
+	engine.commitDesktopNameReassertLocked(staleResult, now)
+	second := engine.collectDueDesktopNameReassertsLocked(now)
+	engine.desktopSyncMu.Unlock()
+	if len(second) != 1 || second[0].generation == first[0].generation {
+		t.Fatalf("latest collected requests = %#v, want one newer generation", second)
+	}
+
+	result := engine.executeDesktopNameReassert(second[0])
+	engine.desktopSyncMu.Lock()
+	engine.commitDesktopNameReassertLocked(result, now)
+	pending := len(engine.desktopNameReassertPending)
+	engine.desktopSyncMu.Unlock()
+
+	if got, want := live.names(), []string{customName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("generation reassertions = %#v, want latest only %#v", got, want)
+	}
+	if pending != 0 {
+		t.Fatalf("name pending after latest success = %d, want 0", pending)
+	}
+}
+
+func TestDesktopLiveSyncNameRetryStateHasCapacityAndTTLBounds(t *testing.T) {
+	now := time.Date(2026, 7, 26, 16, 0, 0, 0, time.Local)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             "desktop-name-sync",
+	}
+	engine := NewEngine("test", agent, nil, "", LangChinese)
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	engine.desktopSyncMu.Lock()
+	for i := 0; i < desktopNameReassertPendingMaximum+10; i++ {
+		sessionID := fmt.Sprintf("thread-capacity-%d", i)
+		sessionKey := fmt.Sprintf("wecom:g:capacity-%d", i)
+		engine.scheduleDesktopNameReassertLocked(
+			desktopNameReassertKey{
+				sessions:   engine.sessions,
+				sessionID:  sessionID,
+				sessionKey: sessionKey,
+			},
+			agent,
+			sessionKey,
+			"[企业微信-Codex] 容量保护群",
+			now.Add(time.Duration(i)*time.Nanosecond),
+		)
+	}
+	if got := len(engine.desktopNameReassertPending); got != desktopNameReassertPendingMaximum {
+		engine.desktopSyncMu.Unlock()
+		t.Fatalf("name retry state size = %d, want bounded at %d", got, desktopNameReassertPendingMaximum)
+	}
+	engine.pruneExpiredDesktopNameReassertsLocked(
+		now.Add(time.Second + desktopNameReassertPendingTTL),
+	)
+	remaining := len(engine.desktopNameReassertPending)
+	engine.desktopSyncMu.Unlock()
+
+	if remaining != 0 {
+		t.Fatalf("name retry state after TTL = %d, want 0", remaining)
+	}
+}
+
+func TestDesktopLiveSyncNameRetryBackoffIsExponentialAndBounded(t *testing.T) {
+	previous := time.Duration(0)
+	reachedMaximum := false
+	for attempts := 1; attempts <= 100; attempts++ {
+		delay := desktopNameReassertRetryDelay(attempts)
+		if delay < previous {
+			t.Fatalf("retry delay decreased at attempt %d: %v after %v", attempts, delay, previous)
+		}
+		if delay > 30*time.Second {
+			t.Fatalf("retry delay exceeded 30s bound at attempt %d: %v", attempts, delay)
+		}
+		want := previous * 2
+		if want > 30*time.Second {
+			want = 30 * time.Second
+		}
+		if previous > 0 && previous < 30*time.Second && delay != want {
+			t.Fatalf("retry delay at attempt %d = %v, want %v", attempts, delay, want)
+		}
+		if delay == 30*time.Second {
+			reachedMaximum = true
+		}
+		previous = delay
+	}
+	if !reachedMaximum {
+		t.Fatal("retry delay never reached its upper bound")
+	}
+}
+
+func TestDesktopLiveSyncNameRouteChangeBeforeExecutionFailsClosed(t *testing.T) {
+	const (
+		sessionID    = "thread-name-stale"
+		replacement  = "thread-name-replacement"
+		sessionKey   = "wecom:g:name-stale"
+		customName   = "[企业微信-Codex] 旧路由群"
+		replacedName = "[企业微信-Codex] 新路由群"
+	)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
+			sessionID: {{SessionID: sessionID, Role: "assistant", TurnCompleted: true}},
+		}},
+		name: "desktop-name-sync",
+	}
+	live := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	session := engine.sessions.NewSession(sessionKey, customName)
+	session.SetAgentSessionID(sessionID, agent.Name())
+	engine.sessions.SetSessionName(sessionID, customName)
+	engine.interactiveStates[sessionKey] = &interactiveState{
+		agentSession: live,
+		platform:     platform,
+		replyCtx:     "ctx",
+		agent:        agent,
+	}
+	engine.desktopNameReassertExecute = func(request desktopNameReassertRequest) desktopNameReassertResult {
+		next := engine.sessions.NewSession(sessionKey, replacedName)
+		next.SetAgentSessionID(replacement, agent.Name())
+		engine.sessions.SetSessionName(replacement, replacedName)
+		return engine.executeDesktopNameReassert(request)
+	}
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	engine.pollDesktopLiveSync(context.Background(), agent)
+
+	if got := live.names(); len(got) != 0 {
+		t.Fatalf("stale route reassertions = %#v, want none", got)
+	}
+	if got := agent.startedSessionIDs(); len(got) != 0 {
+		t.Fatalf("stale route restores = %#v, want none", got)
+	}
+	if got := engine.sessions.GetOrCreateActive(sessionKey).GetAgentSessionID(); got != replacement {
+		t.Fatalf("active route = %q, want replacement %q", got, replacement)
+	}
+	engine.desktopSyncMu.Lock()
+	pending := len(engine.desktopNameReassertPending)
+	engine.desktopSyncMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("stale route name pending = %d, want 0", pending)
+	}
+}
+
+func TestDesktopLiveSyncNameRouteChangeDuringExecutionDropsFailedRetry(t *testing.T) {
+	const (
+		sessionID   = "thread-name-commit-stale"
+		replacement = "thread-name-commit-replacement"
+		sessionKey  = "wecom:g:name-commit-stale"
+		customName  = "[企业微信-Codex] 提交前换路由群"
+	)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
+			sessionID: {{SessionID: sessionID, Role: "assistant", TurnCompleted: true}},
+		}},
+		name: "desktop-name-sync",
+	}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	session := engine.sessions.NewSession(sessionKey, customName)
+	session.SetAgentSessionID(sessionID, agent.Name())
+	engine.sessions.SetSessionName(sessionID, customName)
+	live := &desktopNameReassertSession{
+		controllableAgentSession: newControllableSession(sessionID),
+		failures:                 1,
+		onReassert: func() {
+			next := engine.sessions.NewSession(sessionKey, "replacement")
+			next.SetAgentSessionID(replacement, agent.Name())
+		},
+	}
+	engine.interactiveStates[sessionKey] = &interactiveState{
+		agentSession: live,
+		platform:     platform,
+		replyCtx:     "ctx",
+		agent:        agent,
+	}
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	engine.pollDesktopLiveSync(context.Background(), agent)
+
+	if got, want := live.names(), []string{customName}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("in-flight reassertions = %#v, want %#v", got, want)
+	}
+	engine.desktopSyncMu.Lock()
+	pending := len(engine.desktopNameReassertPending)
+	engine.desktopSyncMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("route-changed failed reassert pending = %d, want dropped", pending)
+	}
+}
+
+func TestDesktopLiveSyncNameRoutePruneClearsMessageAndNamePending(t *testing.T) {
+	const (
+		sessionID   = "thread-name-prune"
+		replacement = "thread-name-prune-replacement"
+		sessionKey  = "wecom:g:name-prune"
+		customName  = "[企业微信-Codex] 路由裁剪群"
+	)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             "desktop-name-sync",
+	}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangChinese)
+	old := engine.sessions.NewSession(sessionKey, customName)
+	old.SetAgentSessionID(sessionID, agent.Name())
+	engine.sessions.SetSessionName(sessionID, customName)
+	key := desktopSyncPendingKey{
+		sessions:   engine.sessions,
+		sessionID:  sessionID,
+		sessionKey: sessionKey,
+	}
+	engine.desktopSyncMu.Lock()
+	engine.desktopSyncPending = map[desktopSyncPendingKey][]ExternalConversationEvent{
+		key: {{SessionID: sessionID, Role: "assistant", Content: "stale"}},
+	}
+	engine.scheduleDesktopNameReassertLocked(
+		desktopNameReassertKey{
+			sessions:   engine.sessions,
+			sessionID:  sessionID,
+			sessionKey: sessionKey,
+		},
+		agent,
+		sessionKey,
+		customName,
+		time.Now(),
+	)
+	engine.desktopSyncMu.Unlock()
+	next := engine.sessions.NewSession(sessionKey, "replacement")
+	next.SetAgentSessionID(replacement, agent.Name())
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	engine.pollDesktopLiveSync(context.Background(), agent)
+
+	engine.desktopSyncMu.Lock()
+	messagePending := len(engine.desktopSyncPending)
+	namePending := len(engine.desktopNameReassertPending)
+	engine.desktopSyncMu.Unlock()
+	if messagePending != 0 || namePending != 0 {
+		t.Fatalf("pending after route prune: message=%d name=%d, want both 0", messagePending, namePending)
+	}
+}
+
+func TestDesktopLiveSyncNameRPCDoesNotHoldDesktopSyncLock(t *testing.T) {
+	const (
+		nameSessionID  = "thread-name-slow"
+		nameSessionKey = "wecom:g:name-slow"
+		messageID      = "thread-message-progress"
+		messageKey     = "feishu:message-progress:user"
+		customName     = "[企业微信-Codex] 慢重申群"
+	)
+	agent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
+			nameSessionID: {{
+				SessionID:     nameSessionID,
+				Role:          "assistant",
+				TurnCompleted: true,
+			}},
+		}},
+		name: "desktop-name-sync",
+	}
+	namePlatform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	messagePlatform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	engine := NewEngine("test", agent, []Platform{namePlatform, messagePlatform}, "", LangChinese)
+	nameSession := engine.sessions.NewSession(nameSessionKey, customName)
+	nameSession.SetAgentSessionID(nameSessionID, agent.Name())
+	engine.sessions.SetSessionName(nameSessionID, customName)
+	messageSession := engine.sessions.NewSession(messageKey, "message route")
+	messageSession.SetAgentSessionID(messageID, agent.Name())
+	if !engine.markPlatformReady(namePlatform) || !engine.markPlatformReady(messagePlatform) {
+		t.Fatal("failed to mark platforms ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	lockFree := make(chan bool, 1)
+	live := &desktopNameReassertSession{
+		controllableAgentSession: newControllableSession(nameSessionID),
+		started:                  started,
+		release:                  release,
+		onReassert: func() {
+			unlocked := engine.desktopSyncMu.TryLock()
+			if unlocked {
+				engine.desktopSyncMu.Unlock()
+			}
+			lockFree <- unlocked
+		},
+	}
+	engine.interactiveStates[nameSessionKey] = &interactiveState{
+		agentSession: live,
+		platform:     namePlatform,
+		replyCtx:     "ctx-name",
+		agent:        agent,
+	}
+
+	firstDone := make(chan struct{})
+	go func() {
+		engine.pollDesktopLiveSync(context.Background(), agent)
+		close(firstDone)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("timed out waiting for slow name RPC")
+	}
+
+	agent.setEvents(messageID, []ExternalConversationEvent{{
+		SessionID: messageID,
+		Role:      "user",
+		Content:   "另一平台继续推进",
+	}})
+	secondDone := make(chan struct{})
+	go func() {
+		engine.pollDesktopLiveSync(context.Background(), agent)
+		close(secondDone)
+	}()
+
+	var secondProgressed bool
+	select {
+	case <-secondDone:
+		secondProgressed = true
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("slow name RPC did not finish after release")
+	}
+	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("second desktop poll did not finish after release")
+	}
+
+	if unlocked := <-lockFree; !unlocked {
+		t.Error("desktopSyncMu was held while the name RPC ran")
+	}
+	if !secondProgressed {
+		t.Error("another platform could not advance while the name RPC was blocked")
+	}
+	messagePlatform.mu.Lock()
+	delivered := append([]string(nil), messagePlatform.sent...)
+	messagePlatform.mu.Unlock()
+	if got, want := delivered, []string{"Codex App · 你\n另一平台继续推进"}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("other platform delivery = %#v, want %#v", got, want)
+	}
 }
 
 func TestDesktopLiveSyncLogsSuccessfulRelayWithoutMessageContent(t *testing.T) {

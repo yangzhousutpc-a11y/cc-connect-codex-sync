@@ -447,16 +447,20 @@ type Engine struct {
 	agentStartLocks    map[Agent]*sync.Mutex
 	agentStartFallback sync.Mutex
 
-	platformLifecycleMu     sync.Mutex
-	platformReady           map[Platform]bool
-	platformOperationCtx    map[Platform]context.Context
-	platformOperationCancel map[Platform]context.CancelFunc
-	stopping                bool
-	desktopSyncMu           sync.Mutex
-	desktopSyncPending      map[desktopSyncPendingKey][]ExternalConversationEvent
-	desktopSyncRestoreOnce  sync.Once
-	replyFooterMu           sync.Mutex
-	replyFooterUsage        replyFooterUsageCache
+	platformLifecycleMu           sync.Mutex
+	platformReady                 map[Platform]bool
+	platformOperationCtx          map[Platform]context.Context
+	platformOperationCancel       map[Platform]context.CancelFunc
+	stopping                      bool
+	desktopSyncMu                 sync.Mutex
+	desktopSyncPending            map[desktopSyncPendingKey][]ExternalConversationEvent
+	desktopNameReassertPending    map[desktopNameReassertKey]desktopNameReassertState
+	desktopNameReassertGeneration uint64
+	desktopNameReassertNow        func() time.Time
+	desktopNameReassertExecute    func(desktopNameReassertRequest) desktopNameReassertResult
+	desktopSyncRestoreOnce        sync.Once
+	replyFooterMu                 sync.Mutex
+	replyFooterUsage              replyFooterUsageCache
 
 	// pendingRestartNotify is queued at startup if a /restart was consumed
 	// from the run/restart_notify file. It is dispatched on the first

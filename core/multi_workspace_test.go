@@ -711,6 +711,98 @@ func TestCommandContextWithWorkspace_UnboundChannelFallsBack(t *testing.T) {
 	}
 }
 
+func TestDesktopLiveSyncWorkspaceNameUsesExactInteractiveKeyForDuplicateThreadID(t *testing.T) {
+	const (
+		sessionID  = "thread-shared-across-workspaces"
+		sessionKey = "wecom:g:shared-route"
+		nameA      = "[企业微信-Codex] 工作区 A"
+		nameB      = "[企业微信-Codex] 工作区 B"
+	)
+	baseDir := t.TempDir()
+	workspaceA := filepath.Join(baseDir, "workspace-a")
+	workspaceB := filepath.Join(baseDir, "workspace-b")
+	for _, workspace := range []string{workspaceA, workspaceB} {
+		if err := os.MkdirAll(workspace, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workspaceA = normalizeWorkspacePath(workspaceA)
+	workspaceB = normalizeWorkspacePath(workspaceB)
+
+	rootAgent := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             "desktop-name-root",
+	}
+	agentA := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: map[string][]ExternalConversationEvent{
+			sessionID: {{SessionID: sessionID, Role: "assistant", TurnCompleted: true}},
+		}},
+		name: "desktop-name-workspace-a",
+	}
+	agentB := &desktopNameSyncAgent{
+		desktopSyncAgent: &desktopSyncAgent{events: make(map[string][]ExternalConversationEvent)},
+		name:             "desktop-name-workspace-b",
+	}
+	platform := &desktopSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "wecom"}}
+	engine := NewEngine("test", rootAgent, []Platform{platform}, "", LangChinese)
+	engine.SetMultiWorkspace(baseDir, filepath.Join(t.TempDir(), "bindings.json"))
+	stateA := engine.workspacePool.GetOrCreate(workspaceA)
+	stateA.agent = agentA
+	stateA.sessions = NewSessionManager("")
+	stateB := engine.workspacePool.GetOrCreate(workspaceB)
+	stateB.agent = agentB
+	stateB.sessions = NewSessionManager("")
+
+	routeA := stateA.sessions.NewSession(sessionKey, nameA)
+	routeA.SetAgentSessionID(sessionID, agentA.Name())
+	stateA.sessions.SetSessionName(sessionID, nameA)
+	routeB := stateB.sessions.NewSession(sessionKey, nameB)
+	routeB.SetAgentSessionID(sessionID, agentB.Name())
+	stateB.sessions.SetSessionName(sessionID, nameB)
+
+	// Deliberately make the global binding point at B. A suffix scan or
+	// interactiveKeyForSessionKey lookup would therefore borrow B's live state
+	// while processing A's route.
+	engine.workspaceBindings.Bind("project:test", extractWorkspaceChannelKey(sessionKey), "shared-route", workspaceB)
+	if got, want := engine.interactiveKeyForSessionKey(sessionKey), workspaceB+":"+sessionKey; got != want {
+		t.Fatalf("test precondition interactive key = %q, want %q", got, want)
+	}
+
+	liveA := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
+	liveB := &desktopNameReassertSession{controllableAgentSession: newControllableSession(sessionID)}
+	engine.interactiveStates[workspaceA+":"+sessionKey] = &interactiveState{
+		agentSession: liveA,
+		platform:     platform,
+		replyCtx:     "ctx-a",
+		agent:        agentA,
+	}
+	engine.interactiveStates[workspaceB+":"+sessionKey] = &interactiveState{
+		agentSession: liveB,
+		platform:     platform,
+		replyCtx:     "ctx-b",
+		agent:        agentB,
+	}
+	if !engine.markPlatformReady(platform) {
+		t.Fatal("failed to mark platform ready")
+	}
+	t.Cleanup(func() { _ = engine.Stop() })
+
+	engine.pollDesktopLiveSync(context.Background(), rootAgent)
+
+	if got, want := liveA.names(), []string{nameA}; !equalDesktopSyncStrings(got, want) {
+		t.Fatalf("workspace A reassertions = %#v, want %#v", got, want)
+	}
+	if got := liveB.names(); len(got) != 0 {
+		t.Fatalf("workspace B was borrowed for A route: %#v", got)
+	}
+	if got := agentA.startedSessionIDs(); len(got) != 0 {
+		t.Fatalf("workspace A unexpectedly restored instead of reusing exact live state: %#v", got)
+	}
+	if got := agentB.startedSessionIDs(); len(got) != 0 {
+		t.Fatalf("workspace B unexpectedly restored: %#v", got)
+	}
+}
+
 func TestWeixinNavigationRestoresOriginalWorkspace(t *testing.T) {
 	baseDir := t.TempDir()
 	workspaceDir := filepath.Join(baseDir, "workspace-1")
