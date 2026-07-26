@@ -3851,6 +3851,14 @@ func syncAgentSessionName(session AgentSession, name string) error {
 	return nil
 }
 
+func syncRequiredAgentSessionName(session AgentSession, name string) error {
+	namer, ok := session.(AgentSessionNamer)
+	if !ok {
+		return fmt.Errorf("agent session does not support renaming")
+	}
+	return namer.SetSessionName(strings.TrimSpace(name))
+}
+
 func primeAgentSessionVisibility(session AgentSession, name string) error {
 	if primer, ok := session.(AgentSessionPrimer); ok {
 		return primer.PrimeSession(strings.TrimSpace(name))
@@ -8753,10 +8761,13 @@ func (e *Engine) syncLiveAgentSessionName(agent Agent, interactiveKey, targetID,
 	}
 	agentSession := state.agentSession
 	state.mu.Unlock()
-	if agentSession == nil || agentSession.CurrentSessionID() != targetID {
-		return nil
+	if agentSession == nil {
+		return fmt.Errorf("live agent session is unavailable for rename")
 	}
-	if err := syncAgentSessionName(agentSession, name); err != nil {
+	if agentSession.CurrentSessionID() != targetID {
+		return fmt.Errorf("live agent session for rename does not match target")
+	}
+	if err := syncRequiredAgentSessionName(agentSession, name); err != nil {
 		slog.Warn("failed to sync renamed agent session", "name", name, "error", err)
 		return err
 	}
@@ -8793,11 +8804,7 @@ func (e *Engine) restoreAgentSessionName(agent Agent, targetID, name string) err
 	if agentSession.CurrentSessionID() != targetID {
 		return fmt.Errorf("restore agent session for rename returned %q, want %q", agentSession.CurrentSessionID(), targetID)
 	}
-	namer, ok := agentSession.(AgentSessionNamer)
-	if !ok {
-		return fmt.Errorf("restored agent session does not support renaming")
-	}
-	if err := namer.SetSessionName(strings.TrimSpace(name)); err != nil {
+	if err := syncRequiredAgentSessionName(agentSession, name); err != nil {
 		return err
 	}
 	return nil
