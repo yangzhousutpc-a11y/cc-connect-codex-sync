@@ -7811,9 +7811,13 @@ type namingAgentSession struct {
 	names       []string
 	nameStarted chan struct{}
 	nameRelease <-chan struct{}
+	nameProbe   func()
 	archivedIDs []string
 	err         error
 	archiveErr  error
+	closeErr    error
+	closeCalls  int
+	closeProbe  func()
 }
 
 type primingAgentSession struct {
@@ -7836,6 +7840,9 @@ func (s *primingAgentSession) PrimeSession(name string) error {
 }
 
 func (s *namingAgentSession) SetSessionName(name string) error {
+	if s.nameProbe != nil {
+		s.nameProbe()
+	}
 	if s.nameStarted != nil {
 		select {
 		case s.nameStarted <- struct{}{}:
@@ -7848,6 +7855,15 @@ func (s *namingAgentSession) SetSessionName(name string) error {
 	s.name = name
 	s.names = append(s.names, name)
 	return s.err
+}
+
+func (s *namingAgentSession) Close() error {
+	s.closeCalls++
+	if s.closeProbe != nil {
+		s.closeProbe()
+	}
+	baseErr := s.controllableAgentSession.Close()
+	return errors.Join(baseErr, s.closeErr)
 }
 
 func (s *namingAgentSession) ArchiveSession(sessionID string) error {
@@ -8043,6 +8059,177 @@ func TestCmdNameWeComReportsRestoreRenameFailureWhenNoLiveState(t *testing.T) {
 	}
 	if sent := p.getSent(); len(sent) != 1 || !strings.Contains(sent[0], "已保存") || !strings.Contains(sent[0], "即时同步失败") {
 		t.Fatalf("reply = %#v, want saved-but-sync-failed guidance", sent)
+	}
+}
+
+func TestCmdNameWeComReportsRestoreCloseFailureWhenRenameSucceeds(t *testing.T) {
+	p := &stubPlatformEngine{n: "wecom"}
+	const sessionKey = "wecom:g:group-1"
+	const targetID = "thread-wecom"
+	const want = "[企业微信-Codex] 企业微信A"
+
+	closeErr := errors.New("temporary Codex process did not close")
+	restored := &namingAgentSession{
+		controllableAgentSession: newControllableSession(targetID),
+		closeErr:                 closeErr,
+	}
+	agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{
+		startSessionFn: func(_ context.Context, sessionID string) (AgentSession, error) {
+			if sessionID != targetID {
+				t.Fatalf("StartSession target = %q, want %q", sessionID, targetID)
+			}
+			return restored, nil
+		},
+	}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	session.SetAgentSessionID(targetID, agent.Name())
+
+	e.cmdName(p, &Message{SessionKey: sessionKey, ReplyCtx: "ctx"}, []string{"企业微信A"})
+
+	if restored.closeCalls != 1 {
+		t.Fatalf("Close calls = %d, want 1", restored.closeCalls)
+	}
+	if restored.name != want {
+		t.Fatalf("restored Codex conversation name = %q, want %q", restored.name, want)
+	}
+	assertWeComNameSavedButSyncFailed(t, e, p, session, targetID, want)
+}
+
+func TestRestoreAgentSessionNameJoinsRenameAndCloseFailures(t *testing.T) {
+	const targetID = "thread-wecom"
+	renameErr := errors.New("desktop rename failed")
+	closeErr := errors.New("temporary Codex process did not close")
+	restored := &namingAgentSession{
+		controllableAgentSession: newControllableSession(targetID),
+		err:                      renameErr,
+		closeErr:                 closeErr,
+	}
+	agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{
+		startSessionFn: func(_ context.Context, _ string) (AgentSession, error) {
+			return restored, nil
+		},
+	}}
+	e := NewEngine("test", agent, nil, "", LangChinese)
+
+	err := e.restoreAgentSessionName(agent, targetID, "[企业微信-Codex] 企业微信A")
+
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("error = %v, want rename error %v", err, renameErr)
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("error = %v, want close error %v", err, closeErr)
+	}
+	if restored.closeCalls != 1 {
+		t.Fatalf("Close calls = %d, want 1", restored.closeCalls)
+	}
+}
+
+func TestRestoreAgentSessionNameClosesSessionReturnedWithStartError(t *testing.T) {
+	const targetID = "thread-wecom"
+	startErr := errors.New("restore startup failed")
+
+	for _, tc := range []struct {
+		name     string
+		closeErr error
+	}{
+		{name: "close succeeds"},
+		{name: "close fails", closeErr: errors.New("temporary Codex process did not close")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restored := &namingAgentSession{
+				controllableAgentSession: newControllableSession(targetID),
+				closeErr:                 tc.closeErr,
+			}
+			agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{
+				startSessionFn: func(_ context.Context, _ string) (AgentSession, error) {
+					return restored, startErr
+				},
+			}}
+			e := NewEngine("test", agent, nil, "", LangChinese)
+			logical := e.sessions.GetOrCreateActive("wecom:g:group-1")
+			logical.SetAgentSessionID(targetID, agent.Name())
+			e.sessions.SetSessionName(targetID, "原持久名")
+
+			err := e.restoreAgentSessionName(agent, targetID, "[企业微信-Codex] 企业微信A")
+
+			if !errors.Is(err, startErr) {
+				t.Fatalf("error = %v, want start error %v", err, startErr)
+			}
+			if tc.closeErr != nil && !errors.Is(err, tc.closeErr) {
+				t.Fatalf("error = %v, want close error %v", err, tc.closeErr)
+			}
+			if restored.closeCalls != 1 {
+				t.Fatalf("Close calls = %d, want 1", restored.closeCalls)
+			}
+			if len(restored.names) != 0 {
+				t.Fatalf("rename calls = %#v, want none after StartSession error", restored.names)
+			}
+			if got := logical.GetAgentSessionID(); got != targetID {
+				t.Fatalf("bound session ID = %q, want unchanged %q", got, targetID)
+			}
+			if got := e.sessions.GetSessionName(targetID); got != "原持久名" {
+				t.Fatalf("persisted name = %q, want unchanged", got)
+			}
+		})
+	}
+}
+
+type mutableRenameAgent struct {
+	*wecomConversationNameAgent
+}
+
+func (*mutableRenameAgent) SetSessionEnv([]string) {}
+
+func TestRestoreAgentSessionNameReleasesMutableStartLockBeforeRenameAndClose(t *testing.T) {
+	const targetID = "thread-wecom"
+	var startSawLocked bool
+	var renameSawUnlocked bool
+	var closeSawUnlocked bool
+
+	var startLock *sync.Mutex
+	restored := &namingAgentSession{controllableAgentSession: newControllableSession(targetID)}
+	agent := &mutableRenameAgent{wecomConversationNameAgent: &wecomConversationNameAgent{
+		controllableAgent: &controllableAgent{
+			startSessionFn: func(_ context.Context, _ string) (AgentSession, error) {
+				if startLock.TryLock() {
+					startLock.Unlock()
+				} else {
+					startSawLocked = true
+				}
+				return restored, nil
+			},
+		},
+	}}
+	e := NewEngine("test", agent, nil, "", LangChinese)
+	startLock = e.mutableAgentStartLock(agent, nil)
+	restored.nameProbe = func() {
+		if startLock.TryLock() {
+			renameSawUnlocked = true
+			startLock.Unlock()
+		}
+	}
+	restored.closeProbe = func() {
+		if startLock.TryLock() {
+			closeSawUnlocked = true
+			startLock.Unlock()
+		}
+	}
+
+	if err := e.restoreAgentSessionName(agent, targetID, "[企业微信-Codex] 企业微信A"); err != nil {
+		t.Fatalf("restoreAgentSessionName returned error: %v", err)
+	}
+	if !startSawLocked {
+		t.Fatal("mutable agent start lock was not held during StartSession")
+	}
+	if !renameSawUnlocked {
+		t.Fatal("mutable agent start lock remained held during SetSessionName")
+	}
+	if !closeSawUnlocked {
+		t.Fatal("mutable agent start lock remained held during Close")
+	}
+	if restored.closeCalls != 1 {
+		t.Fatalf("Close calls = %d, want 1", restored.closeCalls)
 	}
 }
 

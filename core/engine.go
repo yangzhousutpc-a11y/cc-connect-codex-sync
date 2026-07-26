@@ -8784,30 +8784,39 @@ func (e *Engine) restoreAgentSessionName(agent Agent, targetID, name string) err
 	}
 
 	startLock := e.mutableAgentStartLock(agent, nil)
-	if startLock != nil {
-		startLock.Lock()
-		defer startLock.Unlock()
-	}
-
-	agentSession, err := agent.StartSession(e.ctx, targetID)
-	if err != nil {
-		return fmt.Errorf("restore agent session for rename: %w", err)
+	var agentSession AgentSession
+	var restoreErr error
+	func() {
+		if startLock != nil {
+			startLock.Lock()
+			defer startLock.Unlock()
+		}
+		agentSession, restoreErr = agent.StartSession(e.ctx, targetID)
+	}()
+	if restoreErr != nil {
+		restoreErr = fmt.Errorf("restore agent session for rename: %w", restoreErr)
 	}
 	if agentSession == nil {
+		if restoreErr != nil {
+			return restoreErr
+		}
 		return fmt.Errorf("restore agent session for rename: empty session")
 	}
-	defer func() {
-		if closeErr := agentSession.Close(); closeErr != nil {
-			slog.Warn("failed to close temporary agent session after rename", "error", closeErr)
+
+	if restoreErr == nil {
+		if agentSession.CurrentSessionID() != targetID {
+			restoreErr = fmt.Errorf("restore agent session for rename returned %q, want %q", agentSession.CurrentSessionID(), targetID)
+		} else if err := syncRequiredAgentSessionName(agentSession, name); err != nil {
+			restoreErr = err
 		}
-	}()
-	if agentSession.CurrentSessionID() != targetID {
-		return fmt.Errorf("restore agent session for rename returned %q, want %q", agentSession.CurrentSessionID(), targetID)
 	}
-	if err := syncRequiredAgentSessionName(agentSession, name); err != nil {
-		return err
+
+	if closeErr := agentSession.Close(); closeErr != nil {
+		closeErr = fmt.Errorf("close temporary agent session after rename: %w", closeErr)
+		slog.Warn("failed to close temporary agent session after rename", "error", closeErr)
+		return errors.Join(restoreErr, closeErr)
 	}
-	return nil
+	return restoreErr
 }
 
 func (e *Engine) cmdCurrent(p Platform, msg *Message) {
