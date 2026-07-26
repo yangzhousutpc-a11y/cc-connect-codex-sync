@@ -3859,6 +3859,14 @@ func syncRequiredAgentSessionName(session AgentSession, name string) error {
 	return namer.SetSessionName(strings.TrimSpace(name))
 }
 
+func forceSyncRequiredAgentSessionName(session AgentSession, name string) error {
+	name = strings.TrimSpace(name)
+	if reassertor, ok := session.(AgentSessionNameReassertor); ok {
+		return reassertor.ReassertSessionName(name)
+	}
+	return syncRequiredAgentSessionName(session, name)
+}
+
 func primeAgentSessionVisibility(session AgentSession, name string) error {
 	if primer, ok := session.(AgentSessionPrimer); ok {
 		return primer.PrimeSession(strings.TrimSpace(name))
@@ -8731,7 +8739,7 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 	if active := sessions.GetOrCreateActive(msg.SessionKey); active.GetAgentSessionID() == targetID {
 		active.SetName(name)
 		sessions.Save()
-		liveSyncErr = e.syncLiveAgentSessionName(agent, interactiveKey, targetID, name)
+		liveSyncErr = e.syncLiveAgentSessionName(agent, interactiveKey, targetID, name, currentTarget)
 	}
 
 	shortID := targetID
@@ -8749,7 +8757,7 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 // the target is the active conversation. The session-name map remains the
 // durable source of truth; after a restart it briefly restores that same
 // conversation so the Codex App title remains aligned before the next turn.
-func (e *Engine) syncLiveAgentSessionName(agent Agent, interactiveKey, targetID, name string) error {
+func (e *Engine) syncLiveAgentSessionName(agent Agent, interactiveKey, targetID, name string, force bool) error {
 	e.interactiveMu.Lock()
 	state := e.interactiveStates[interactiveKey]
 	if state != nil {
@@ -8757,7 +8765,7 @@ func (e *Engine) syncLiveAgentSessionName(agent Agent, interactiveKey, targetID,
 	}
 	e.interactiveMu.Unlock()
 	if state == nil {
-		return e.restoreAgentSessionName(agent, targetID, name)
+		return e.restoreAgentSessionName(agent, targetID, name, force)
 	}
 	agentSession := state.agentSession
 	state.mu.Unlock()
@@ -8767,7 +8775,11 @@ func (e *Engine) syncLiveAgentSessionName(agent Agent, interactiveKey, targetID,
 	if agentSession.CurrentSessionID() != targetID {
 		return fmt.Errorf("live agent session for rename does not match target")
 	}
-	if err := syncRequiredAgentSessionName(agentSession, name); err != nil {
+	syncName := syncRequiredAgentSessionName
+	if force {
+		syncName = forceSyncRequiredAgentSessionName
+	}
+	if err := syncName(agentSession, name); err != nil {
 		slog.Warn("failed to sync renamed agent session", "name", name, "error", err)
 		return err
 	}
@@ -8778,7 +8790,7 @@ func (e *Engine) syncLiveAgentSessionName(agent Agent, interactiveKey, targetID,
 // enough to persist a title change after a service restart. It deliberately
 // never falls back to a fresh session, so a failed restore cannot create or
 // rebind a conversation.
-func (e *Engine) restoreAgentSessionName(agent Agent, targetID, name string) error {
+func (e *Engine) restoreAgentSessionName(agent Agent, targetID, name string, force bool) error {
 	if agent == nil || strings.TrimSpace(targetID) == "" {
 		return fmt.Errorf("cannot restore agent session for rename")
 	}
@@ -8806,8 +8818,14 @@ func (e *Engine) restoreAgentSessionName(agent Agent, targetID, name string) err
 	if restoreErr == nil {
 		if agentSession.CurrentSessionID() != targetID {
 			restoreErr = fmt.Errorf("restore agent session for rename returned %q, want %q", agentSession.CurrentSessionID(), targetID)
-		} else if err := syncRequiredAgentSessionName(agentSession, name); err != nil {
-			restoreErr = err
+		} else {
+			syncName := syncRequiredAgentSessionName
+			if force {
+				syncName = forceSyncRequiredAgentSessionName
+			}
+			if err := syncName(agentSession, name); err != nil {
+				restoreErr = err
+			}
 		}
 	}
 

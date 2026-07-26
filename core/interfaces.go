@@ -513,6 +513,12 @@ type AgentSessionNamer interface {
 	SetSessionName(name string) error
 }
 
+// AgentSessionNameReassertor is an optional capability for agent backends that
+// can force a persisted conversation name to be written again.
+type AgentSessionNameReassertor interface {
+	ReassertSessionName(name string) error
+}
+
 // AgentSessionPrimer makes a newly created agent conversation durable and
 // visible in clients that hide zero-turn sessions.
 type AgentSessionPrimer interface {

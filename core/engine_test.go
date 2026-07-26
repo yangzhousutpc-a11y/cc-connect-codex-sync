@@ -7820,6 +7820,18 @@ type namingAgentSession struct {
 	closeProbe  func()
 }
 
+type reassertingNamingAgentSession struct {
+	*namingAgentSession
+	reassertedNames []string
+	reassertErr     error
+}
+
+func (s *reassertingNamingAgentSession) ReassertSessionName(name string) error {
+	s.name = name
+	s.reassertedNames = append(s.reassertedNames, name)
+	return s.reassertErr
+}
+
 type primingAgentSession struct {
 	*namingAgentSession
 	primedNames  []string
@@ -7887,6 +7899,51 @@ func TestSyncAgentSessionName(t *testing.T) {
 	}
 }
 
+func TestSyncAgentSessionNameDoesNotForceReassertor(t *testing.T) {
+	s := &reassertingNamingAgentSession{
+		namingAgentSession: &namingAgentSession{controllableAgentSession: newControllableSession("thread-1")},
+	}
+
+	if err := syncAgentSessionName(s, "  [Codex] 普通同步  "); err != nil {
+		t.Fatalf("syncAgentSessionName returned error: %v", err)
+	}
+	if got, want := s.names, []string{"[Codex] 普通同步"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("SetSessionName calls = %#v, want %#v", got, want)
+	}
+	if len(s.reassertedNames) != 0 {
+		t.Fatalf("ReassertSessionName calls = %#v, want none", s.reassertedNames)
+	}
+}
+
+func TestForceSyncRequiredAgentSessionNamePrefersReassertorAndFallsBackToNamer(t *testing.T) {
+	t.Run("prefers reassertor", func(t *testing.T) {
+		s := &reassertingNamingAgentSession{
+			namingAgentSession: &namingAgentSession{controllableAgentSession: newControllableSession("thread-1")},
+		}
+
+		if err := forceSyncRequiredAgentSessionName(s, "  [Codex] 强制同步  "); err != nil {
+			t.Fatalf("forceSyncRequiredAgentSessionName returned error: %v", err)
+		}
+		if len(s.names) != 0 {
+			t.Fatalf("SetSessionName calls = %#v, want none", s.names)
+		}
+		if got, want := s.reassertedNames, []string{"[Codex] 强制同步"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("ReassertSessionName calls = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("falls back to namer", func(t *testing.T) {
+		s := &namingAgentSession{controllableAgentSession: newControllableSession("thread-1")}
+
+		if err := forceSyncRequiredAgentSessionName(s, "  [Codex] 兼容同步  "); err != nil {
+			t.Fatalf("forceSyncRequiredAgentSessionName returned error: %v", err)
+		}
+		if got, want := s.names, []string{"[Codex] 兼容同步"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("SetSessionName calls = %#v, want %#v", got, want)
+		}
+	})
+}
+
 type wecomConversationNameAgent struct {
 	*controllableAgent
 }
@@ -7900,7 +7957,9 @@ func (a *wecomConversationNameAgent) FormatConversationNameForPlatform(platformN
 
 func TestCmdNameWeComFormatsPersistsAndSynchronizesLiveSession(t *testing.T) {
 	p := &stubPlatformEngine{n: "wecom"}
-	live := &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")}
+	live := &reassertingNamingAgentSession{
+		namingAgentSession: &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")},
+	}
 	agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{nextSession: live}}
 	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
 
@@ -7921,6 +7980,12 @@ func TestCmdNameWeComFormatsPersistsAndSynchronizesLiveSession(t *testing.T) {
 	if got := live.name; got != want {
 		t.Fatalf("live Codex conversation name = %q, want %q", got, want)
 	}
+	if len(live.names) != 0 {
+		t.Fatalf("live SetSessionName calls = %#v, want none for explicit current /name", live.names)
+	}
+	if got := live.reassertedNames; !reflect.DeepEqual(got, []string{want}) {
+		t.Fatalf("live ReassertSessionName calls = %#v, want [%q]", got, want)
+	}
 }
 
 func TestCmdNameWeComIndexedTargetKeepsExplicitNameUnformatted(t *testing.T) {
@@ -7938,6 +8003,33 @@ func TestCmdNameWeComIndexedTargetKeepsExplicitNameUnformatted(t *testing.T) {
 
 	if got := e.sessions.GetSessionName("thread-feishu"); got != "飞书目标名" {
 		t.Fatalf("indexed WeCom name = %q, want unformatted explicit target name", got)
+	}
+}
+
+func TestCmdNameWeComIndexedActiveTargetUsesOrdinaryNaming(t *testing.T) {
+	p := &stubPlatformEngine{n: "wecom"}
+	live := &reassertingNamingAgentSession{
+		namingAgentSession: &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")},
+	}
+	agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{
+		nextSession: live,
+		listFn: func() ([]AgentSessionInfo, error) {
+			return []AgentSessionInfo{{ID: "thread-wecom", Summary: "current target"}}, nil
+		},
+	}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
+	const sessionKey = "wecom:g:group-1"
+	current := e.sessions.GetOrCreateActive(sessionKey)
+	current.SetAgentSessionID("thread-wecom", agent.Name())
+	e.interactiveStates[sessionKey] = &interactiveState{agentSession: live, platform: p, replyCtx: "ctx"}
+
+	e.cmdName(p, &Message{SessionKey: sessionKey, ReplyCtx: "ctx"}, []string{"1", "索引目标名"})
+
+	if got, want := live.names, []string{"索引目标名"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("indexed SetSessionName calls = %#v, want %#v", got, want)
+	}
+	if len(live.reassertedNames) != 0 {
+		t.Fatalf("indexed ReassertSessionName calls = %#v, want none", live.reassertedNames)
 	}
 }
 
@@ -7987,7 +8079,9 @@ func TestCmdNameWeComRestoresPersistedThreadWhenNoLiveState(t *testing.T) {
 	const want = "[企业微信-Codex] 企业微信A"
 
 	var startedWith string
-	restored := &namingAgentSession{controllableAgentSession: newControllableSession(targetID)}
+	restored := &reassertingNamingAgentSession{
+		namingAgentSession: &namingAgentSession{controllableAgentSession: newControllableSession(targetID)},
+	}
 	agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{
 		startSessionFn: func(_ context.Context, sessionID string) (AgentSession, error) {
 			startedWith = sessionID
@@ -8005,6 +8099,12 @@ func TestCmdNameWeComRestoresPersistedThreadWhenNoLiveState(t *testing.T) {
 	}
 	if got := restored.name; got != want {
 		t.Fatalf("restored Codex conversation name = %q, want %q", got, want)
+	}
+	if len(restored.names) != 0 {
+		t.Fatalf("restored SetSessionName calls = %#v, want none for explicit current /name", restored.names)
+	}
+	if got := restored.reassertedNames; !reflect.DeepEqual(got, []string{want}) {
+		t.Fatalf("restored ReassertSessionName calls = %#v, want [%q]", got, want)
 	}
 	select {
 	case <-restored.closed:
@@ -8112,7 +8212,7 @@ func TestRestoreAgentSessionNameJoinsRenameAndCloseFailures(t *testing.T) {
 	}}
 	e := NewEngine("test", agent, nil, "", LangChinese)
 
-	err := e.restoreAgentSessionName(agent, targetID, "[企业微信-Codex] 企业微信A")
+	err := e.restoreAgentSessionName(agent, targetID, "[企业微信-Codex] 企业微信A", true)
 
 	if !errors.Is(err, renameErr) {
 		t.Fatalf("error = %v, want rename error %v", err, renameErr)
@@ -8151,7 +8251,7 @@ func TestRestoreAgentSessionNameClosesSessionReturnedWithStartError(t *testing.T
 			logical.SetAgentSessionID(targetID, agent.Name())
 			e.sessions.SetSessionName(targetID, "原持久名")
 
-			err := e.restoreAgentSessionName(agent, targetID, "[企业微信-Codex] 企业微信A")
+			err := e.restoreAgentSessionName(agent, targetID, "[企业微信-Codex] 企业微信A", true)
 
 			if !errors.Is(err, startErr) {
 				t.Fatalf("error = %v, want start error %v", err, startErr)
@@ -8216,7 +8316,7 @@ func TestRestoreAgentSessionNameReleasesMutableStartLockBeforeRenameAndClose(t *
 		}
 	}
 
-	if err := e.restoreAgentSessionName(agent, targetID, "[企业微信-Codex] 企业微信A"); err != nil {
+	if err := e.restoreAgentSessionName(agent, targetID, "[企业微信-Codex] 企业微信A", true); err != nil {
 		t.Fatalf("restoreAgentSessionName returned error: %v", err)
 	}
 	if !startSawLocked {
@@ -8384,7 +8484,9 @@ func assertWeComNameSavedButSyncFailed(
 
 func TestProcessInteractiveMessageWithWeComCustomNameOverridesSynthesizedChatName(t *testing.T) {
 	p := &stubPlatformEngine{n: "wecom"}
-	live := &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")}
+	live := &reassertingNamingAgentSession{
+		namingAgentSession: &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")},
+	}
 	agent := &controllableAgent{nextSession: live}
 	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
 
@@ -8409,6 +8511,9 @@ func TestProcessInteractiveMessageWithWeComCustomNameOverridesSynthesizedChatNam
 
 	if got, wantNames := live.names, []string{want, want}; !reflect.DeepEqual(got, wantNames) {
 		t.Fatalf("synced names = %#v, want persistent custom name %#v", got, wantNames)
+	}
+	if len(live.reassertedNames) != 0 {
+		t.Fatalf("ordinary turn ReassertSessionName calls = %#v, want none", live.reassertedNames)
 	}
 }
 

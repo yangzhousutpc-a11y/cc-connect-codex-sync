@@ -316,11 +316,11 @@ func TestAppServerSession_SetSessionNameSyncsAndSkipsDuplicates(t *testing.T) {
 	}
 	s.threadID.Store("thread-1")
 
-	setName := func(name string) {
+	sendName := func(operation, name string, invoke func() error) {
 		t.Helper()
 		wantLine := strings.Count(stdin.String(), "\n") + 1
 		done := make(chan error, 1)
-		go func() { done <- s.SetSessionName(name) }()
+		go func() { done <- invoke() }()
 
 		line := waitForWrittenJSONLineCount(t, stdin, wantLine)
 		var req struct {
@@ -340,8 +340,14 @@ func TestAppServerSession_SetSessionNameSyncsAndSkipsDuplicates(t *testing.T) {
 		s.pendingMu.Unlock()
 		responseCh <- rpcResponseEnvelope{ID: req.ID, Result: json.RawMessage(`{}`)}
 		if err := <-done; err != nil {
-			t.Fatalf("SetSessionName(%q): %v", name, err)
+			t.Fatalf("%s(%q): %v", operation, name, err)
 		}
+	}
+	setName := func(name string) {
+		sendName("SetSessionName", name, func() error { return s.SetSessionName(name) })
+	}
+	reassertName := func(name string) {
+		sendName("ReassertSessionName", name, func() error { return s.ReassertSessionName(name) })
 	}
 
 	setName("[Codex] Alpha")
@@ -358,8 +364,15 @@ func TestAppServerSession_SetSessionNameSyncsAndSkipsDuplicates(t *testing.T) {
 	if !reflect.DeepEqual(refreshed, []string{"thread-1", "thread-1"}) {
 		t.Fatalf("refreshes after duplicate name = %#v, want a second UI refresh", refreshed)
 	}
-	setName("[Codex] Beta")
+	reassertName("[Codex] Alpha")
+	if got := strings.Count(stdin.String(), "\n"); got != writesAfterFirstName+1 {
+		t.Fatalf("reasserted duplicate wrote %d lines, want %d", got, writesAfterFirstName+1)
+	}
 	if !reflect.DeepEqual(refreshed, []string{"thread-1", "thread-1", "thread-1"}) {
+		t.Fatalf("refreshes after reasserted duplicate = %#v, want a third UI refresh", refreshed)
+	}
+	setName("[Codex] Beta")
+	if !reflect.DeepEqual(refreshed, []string{"thread-1", "thread-1", "thread-1", "thread-1"}) {
 		t.Fatalf("refreshes after renamed thread = %#v", refreshed)
 	}
 }
@@ -1178,6 +1191,7 @@ var _ interface {
 } = (*appServerSession)(nil)
 
 var _ core.AgentSessionNamer = (*appServerSession)(nil)
+var _ core.AgentSessionNameReassertor = (*appServerSession)(nil)
 
 type lockedWriteCloser struct {
 	mu  sync.Mutex

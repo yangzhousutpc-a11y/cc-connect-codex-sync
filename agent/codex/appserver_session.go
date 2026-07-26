@@ -511,6 +511,14 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 }
 
 func (s *appServerSession) SetSessionName(name string) error {
+	return s.setSessionName(name, false)
+}
+
+func (s *appServerSession) ReassertSessionName(name string) error {
+	return s.setSessionName(name, true)
+}
+
+func (s *appServerSession) setSessionName(name string, force bool) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil
@@ -523,7 +531,7 @@ func (s *appServerSession) SetSessionName(name string) error {
 
 	s.nameMu.Lock()
 	defer s.nameMu.Unlock()
-	if s.sessionName == name {
+	if !force && s.sessionName == name {
 		s.refreshThread(threadID)
 		return nil
 	}
