@@ -7964,6 +7964,88 @@ func TestCmdNameWeComReportsLiveRenameFailureAndRetriesOnNextTurn(t *testing.T) 
 	}
 }
 
+func TestCmdNameWeComRestoresPersistedThreadWhenNoLiveState(t *testing.T) {
+	p := &stubPlatformEngine{n: "wecom"}
+	const sessionKey = "wecom:g:group-1"
+	const targetID = "thread-wecom"
+	const want = "[企业微信-Codex] 企业微信A"
+
+	var startedWith string
+	restored := &namingAgentSession{controllableAgentSession: newControllableSession(targetID)}
+	agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{
+		startSessionFn: func(_ context.Context, sessionID string) (AgentSession, error) {
+			startedWith = sessionID
+			return restored, nil
+		},
+	}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	session.SetAgentSessionID(targetID, agent.Name())
+
+	e.cmdName(p, &Message{SessionKey: sessionKey, ReplyCtx: "ctx"}, []string{"企业微信A"})
+
+	if got := startedWith; got != targetID {
+		t.Fatalf("StartSession target = %q, want existing thread %q", got, targetID)
+	}
+	if got := restored.name; got != want {
+		t.Fatalf("restored Codex conversation name = %q, want %q", got, want)
+	}
+	select {
+	case <-restored.closed:
+	default:
+		t.Fatal("restored agent session was not closed")
+	}
+	if got := session.GetAgentSessionID(); got != targetID {
+		t.Fatalf("bound session ID = %q, want unchanged %q", got, targetID)
+	}
+	if got := e.sessions.GetSessionName(targetID); got != want {
+		t.Fatalf("persisted session name = %q, want %q", got, want)
+	}
+	if sent := p.getSent(); len(sent) != 1 || !strings.Contains(sent[0], "已命名") {
+		t.Fatalf("reply = %#v, want success", sent)
+	}
+}
+
+func TestCmdNameWeComReportsRestoreRenameFailureWhenNoLiveState(t *testing.T) {
+	p := &stubPlatformEngine{n: "wecom"}
+	const sessionKey = "wecom:g:group-1"
+	const targetID = "thread-wecom"
+	const want = "[企业微信-Codex] 企业微信A"
+
+	restored := &namingAgentSession{
+		controllableAgentSession: newControllableSession(targetID),
+		err:                      errors.New("desktop rename failed"),
+	}
+	agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{
+		startSessionFn: func(_ context.Context, sessionID string) (AgentSession, error) {
+			if sessionID != targetID {
+				t.Fatalf("StartSession target = %q, want %q", sessionID, targetID)
+			}
+			return restored, nil
+		},
+	}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	session.SetAgentSessionID(targetID, agent.Name())
+
+	e.cmdName(p, &Message{SessionKey: sessionKey, ReplyCtx: "ctx"}, []string{"企业微信A"})
+
+	if got := e.sessions.GetSessionName(targetID); got != want {
+		t.Fatalf("persisted name = %q, want %q despite restore failure", got, want)
+	}
+	if got := session.GetAgentSessionID(); got != targetID {
+		t.Fatalf("bound session ID = %q, want unchanged %q", got, targetID)
+	}
+	select {
+	case <-restored.closed:
+	default:
+		t.Fatal("restored agent session was not closed after rename failure")
+	}
+	if sent := p.getSent(); len(sent) != 1 || !strings.Contains(sent[0], "已保存") || !strings.Contains(sent[0], "即时同步失败") {
+		t.Fatalf("reply = %#v, want saved-but-sync-failed guidance", sent)
+	}
+}
+
 func TestProcessInteractiveMessageWithWeComCustomNameOverridesSynthesizedChatName(t *testing.T) {
 	p := &stubPlatformEngine{n: "wecom"}
 	live := &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")}

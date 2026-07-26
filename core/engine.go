@@ -8723,7 +8723,7 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 	if active := sessions.GetOrCreateActive(msg.SessionKey); active.GetAgentSessionID() == targetID {
 		active.SetName(name)
 		sessions.Save()
-		liveSyncErr = e.syncLiveAgentSessionName(interactiveKey, targetID, name)
+		liveSyncErr = e.syncLiveAgentSessionName(agent, interactiveKey, targetID, name)
 	}
 
 	shortID := targetID
@@ -8739,9 +8739,9 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 
 // syncLiveAgentSessionName applies an explicit /name change immediately when
 // the target is the active conversation. The session-name map remains the
-// durable source of truth; this only keeps the open Codex App thread aligned
-// before the next incoming turn.
-func (e *Engine) syncLiveAgentSessionName(interactiveKey, targetID, name string) error {
+// durable source of truth; after a restart it briefly restores that same
+// conversation so the Codex App title remains aligned before the next turn.
+func (e *Engine) syncLiveAgentSessionName(agent Agent, interactiveKey, targetID, name string) error {
 	e.interactiveMu.Lock()
 	state := e.interactiveStates[interactiveKey]
 	if state != nil {
@@ -8749,7 +8749,7 @@ func (e *Engine) syncLiveAgentSessionName(interactiveKey, targetID, name string)
 	}
 	e.interactiveMu.Unlock()
 	if state == nil {
-		return nil
+		return e.restoreAgentSessionName(agent, targetID, name)
 	}
 	agentSession := state.agentSession
 	state.mu.Unlock()
@@ -8758,6 +8758,46 @@ func (e *Engine) syncLiveAgentSessionName(interactiveKey, targetID, name string)
 	}
 	if err := syncAgentSessionName(agentSession, name); err != nil {
 		slog.Warn("failed to sync renamed agent session", "name", name, "error", err)
+		return err
+	}
+	return nil
+}
+
+// restoreAgentSessionName resumes an existing agent conversation just long
+// enough to persist a title change after a service restart. It deliberately
+// never falls back to a fresh session, so a failed restore cannot create or
+// rebind a conversation.
+func (e *Engine) restoreAgentSessionName(agent Agent, targetID, name string) error {
+	if agent == nil || strings.TrimSpace(targetID) == "" {
+		return fmt.Errorf("cannot restore agent session for rename")
+	}
+
+	startLock := e.mutableAgentStartLock(agent, nil)
+	if startLock != nil {
+		startLock.Lock()
+		defer startLock.Unlock()
+	}
+
+	agentSession, err := agent.StartSession(e.ctx, targetID)
+	if err != nil {
+		return fmt.Errorf("restore agent session for rename: %w", err)
+	}
+	if agentSession == nil {
+		return fmt.Errorf("restore agent session for rename: empty session")
+	}
+	defer func() {
+		if closeErr := agentSession.Close(); closeErr != nil {
+			slog.Warn("failed to close temporary agent session after rename", "error", closeErr)
+		}
+	}()
+	if agentSession.CurrentSessionID() != targetID {
+		return fmt.Errorf("restore agent session for rename returned %q, want %q", agentSession.CurrentSessionID(), targetID)
+	}
+	namer, ok := agentSession.(AgentSessionNamer)
+	if !ok {
+		return fmt.Errorf("restored agent session does not support renaming")
+	}
+	if err := namer.SetSessionName(strings.TrimSpace(name)); err != nil {
 		return err
 	}
 	return nil
