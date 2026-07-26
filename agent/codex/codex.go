@@ -30,6 +30,7 @@ const (
 	wecomConversationNamePrefix           = "[企业微信-Codex]"
 	decoratedFeishuConversationNamePrefix = "🪽 [飞书-Codex]"
 	decoratedWeixinConversationNamePrefix = "💬 [微信-Codex]"
+	decoratedWeComConversationNamePrefix  = "✣ [企业微信-Codex]"
 )
 
 func (a *Agent) FormatConversationName(name string) string {
@@ -57,6 +58,7 @@ func formatConversationName(prefix, name string) string {
 	for _, knownPrefix := range []string{
 		decoratedFeishuConversationNamePrefix,
 		decoratedWeixinConversationNamePrefix,
+		decoratedWeComConversationNamePrefix,
 		feishuConversationNamePrefix,
 		weixinConversationNamePrefix,
 		wecomConversationNamePrefix,

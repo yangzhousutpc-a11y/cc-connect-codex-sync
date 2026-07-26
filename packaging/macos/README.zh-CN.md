@@ -43,7 +43,7 @@ install -m 600 ~/cc-connect/data/config.example.toml ~/cc-connect/data/config.to
 ./doctor.sh
 ```
 
-详细平台步骤见安装包内的 `source/docs/feishu.md`、`source/docs/weixin.md` 和 `source/docs/wecom.md`。企业微信需先在管理后台创建智能机器人并开启 API 长连接模式，再运行 `cc-connect wecom setup`，重启服务，并在手建内部群中添加机器人、@机器人 发送首条消息。BotID 与 Secret 只保存在本机配置中。以后可以从当前安装包目录重新运行 `./setup.sh`；安装后也会在 `~/cc-connect/installer` 保留该入口。
+详细平台步骤见安装包内的 `source/docs/feishu.md`、`source/docs/weixin.md` 和 `source/docs/wecom.md`。企业微信需先在管理后台创建智能机器人并开启 API 长连接模式，再运行 `cc-connect wecom setup --bot-name "机器人显示名"`，重启服务，并在手建内部群中添加机器人、@机器人 发送首条消息。`--bot-name` 用于精确去除机器人的 @ 前缀；BotID 与 Secret 只保存在本机配置中。以后可以从当前安装包目录重新运行 `./setup.sh`；安装后也会在 `~/cc-connect/installer` 保留该入口。
 
 ## 以后需要卸载时
 

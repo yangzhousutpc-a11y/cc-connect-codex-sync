@@ -45,6 +45,7 @@ func TestRunWeComSetupSavesCredentialsWithoutPrintingSecret(t *testing.T) {
 		"--project", "alpha",
 		"--bot-id", "bot-12345678",
 		"--bot-secret", secret,
+		"--bot-name", "Yang's Codex",
 		"--allow-from", "zhangsan,lisi",
 	}, &stdout, &stderr, func() (string, error) {
 		t.Fatal("bot ID reader should not be called when --bot-id is set")
@@ -90,6 +91,9 @@ func TestRunWeComSetupSavesCredentialsWithoutPrintingSecret(t *testing.T) {
 	}
 	if got, _ := p.Options["allow_from"].(string); got != "zhangsan,lisi" {
 		t.Fatalf("allow_from = %q, want zhangsan,lisi", got)
+	}
+	if got, _ := p.Options["bot_name"].(string); got != "Yang's Codex" {
+		t.Fatalf("bot_name = %q, want configured display name", got)
 	}
 }
 

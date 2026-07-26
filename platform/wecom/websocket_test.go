@@ -48,7 +48,7 @@ func TestNewValidatesWebSocketConfiguration(t *testing.T) {
 }
 
 func TestStripMentionAndSplitByBytes(t *testing.T) {
-	if got := stripWeComAtMentions(" 允许 ＠BOT-1 @bot-1 ", "bot-1"); got != "允许" {
+	if got := stripWeComAtMentions("＠BOT-1 @bot-1 允许", "bot-1"); got != "允许" {
 		t.Fatalf("stripWeComAtMentions() = %q", got)
 	}
 	if got := stripWeComAtMentions("@bot 第一行\n\n第二行", "bot"); got != "第一行\n\n第二行" {
@@ -58,14 +58,27 @@ func TestStripMentionAndSplitByBytes(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"@Claude Code /new", "/new"},
-		{"@张三 @Claude Code /list", "/list"},
-		{"@Claude Code !status", "!status"},
+		{"@Claude Code /new", "@Claude Code /new"},
+		{"@张三 @Claude Code /list", "@张三 @Claude Code /list"},
+		{"@Claude Code !status", "@Claude Code !status"},
 		{"@Claude Code https://example.com", "@Claude Code https://example.com"},
 		{"@Claude Code 1/2 正文", "@Claude Code 1/2 正文"},
 		{"普通正文 /new", "普通正文 /new"},
 	} {
 		if got := stripWeComAtMentions(tt.input, "unrelated-bot-id"); got != tt.want {
+			t.Errorf("stripWeComAtMentions(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+	for _, tt := range []struct {
+		input string
+		want  string
+	}{
+		{"＠Yang's Codex /name 项目 A", "/name 项目 A"},
+		{"@yang'S codex\n\n正文", "正文"},
+		{"@张三 @Yang's Codex 正文", "@张三 正文"},
+		{"@Yang's Codex助手 正文", "@Yang's Codex助手 正文"},
+	} {
+		if got := stripWeComAtMentions(tt.input, "Yang's Codex"); got != tt.want {
 			t.Errorf("stripWeComAtMentions(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
@@ -78,6 +91,39 @@ func TestStripMentionAndSplitByBytes(t *testing.T) {
 		if len(part) > 7 {
 			t.Fatalf("chunk length = %d, want <= 7", len(part))
 		}
+	}
+}
+
+func TestNewUsesConfiguredBotNameForInboundMention(t *testing.T) {
+	configured, err := New(map[string]any{
+		"mode":       "websocket",
+		"bot_id":     "bot-id",
+		"bot_secret": "secret",
+		"bot_name":   "Yang's Codex",
+		"allow_from": "*",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	p := configured.(*Platform)
+	p.ctx = context.Background()
+	got := make(chan *core.Message, 1)
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		got <- msg
+		close(msg.DispatchAdmission)
+	}
+
+	p.handleMsgCallback(callbackFrame(t, "req-bot-name", callbackBody(
+		"m-bot-name", "group", "group-12345678", "user-a", "text", "＠yang'S codex 正文",
+	)))
+
+	select {
+	case msg := <-got:
+		if msg.Content != "正文" {
+			t.Fatalf("inbound content = %q, want bot mention removed", msg.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for inbound message")
 	}
 }
 

@@ -42,6 +42,7 @@ type backoffWaiter func(context.Context, time.Duration) bool
 
 type Platform struct {
 	botID     string
+	botName   string
 	secret    string
 	allowFrom string
 
@@ -143,8 +144,10 @@ func New(opts map[string]any) (core.Platform, error) {
 		return nil, fmt.Errorf("wecom: unsupported mode %q; only websocket is supported", mode)
 	}
 	botID, _ := opts["bot_id"].(string)
+	botName, _ := opts["bot_name"].(string)
 	secret, _ := opts["bot_secret"].(string)
 	botID = strings.TrimSpace(botID)
+	botName = strings.TrimSpace(botName)
 	secret = strings.TrimSpace(secret)
 	if botID == "" || secret == "" {
 		return nil, errors.New("wecom: bot_id and bot_secret are required")
@@ -154,6 +157,7 @@ func New(opts map[string]any) (core.Platform, error) {
 
 	return &Platform{
 		botID:                botID,
+		botName:              botName,
 		secret:               secret,
 		allowFrom:            allowFrom,
 		endpoint:             defaultEndpoint,
@@ -432,7 +436,7 @@ func (p *Platform) handleMsgCallback(frame wsFrame) {
 		slog.Info("wecom: unsupported message type", "msg_type", body.MsgType)
 		return
 	}
-	content = stripWeComAtMentions(content, p.botID, body.AibotID)
+	content = stripWeComAtMentions(content, p.botName, p.botID, body.AibotID)
 	if content == "" && len(mediaParts) == 0 {
 		return
 	}

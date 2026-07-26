@@ -63,9 +63,10 @@ New Weixin conversations use `[微信-Codex] Topic`. Every text reply includes t
 ### WeCom: manually created group, one conversation
 
 - Create an intelligent bot in the WeCom admin console, enable API WebSocket mode, and obtain its BotID and Secret.
-- Run `cc-connect wecom setup` locally, then restart the service.
+- Run `cc-connect wecom setup --bot-name "Bot display name"` locally, then restart the service. Supplying the display name removes only the bot's exact @mention and never guesses at other members' mentions.
 - Manually create an internal group, add the bot, and send the first message while mentioning the bot.
 - Each group keeps one stable Codex conversation named with `[企业微信-Codex]`.
+- Send `@bot /name Actual WeCom group name` in the group to fix that conversation name as `[企业微信-Codex] Actual WeCom group name`.
 - `/new` does not create a WeCom group or change the current binding. It only explains how to create the next group.
 
 See the [WeCom guide](docs/wecom.md) for the exact steps. Keep the Secret only in the local configuration and never commit it to Git.
@@ -73,10 +74,10 @@ See the [WeCom guide](docs/wecom.md) for the exact steps. Keep the Secret only i
 ### Relay markers
 
 ```text
-✣ Codex App · 你
+Codex App · 你
 Content entered by the user in Codex App
 
-✣ Codex · 回复
+Codex · 回复
 Content returned by Codex
 ```
 

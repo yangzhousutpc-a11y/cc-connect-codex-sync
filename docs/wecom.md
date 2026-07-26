@@ -11,13 +11,14 @@
 5. 在安装 cc-connect 的 Mac 上运行：
 
    ```bash
-   cc-connect wecom setup --project my-project
+   cc-connect wecom setup --project my-project --bot-name "机器人在企业微信中的显示名"
    ```
 
-   按提示输入 `bot_id` 和 `bot_secret`。配置使用：
+   按提示输入 `bot_id` 和 `bot_secret`。`--bot-name` 可选但建议填写：企业微信长连接回调没有 @ 提及名单，填写后程序只会精确删除这个机器人的 @显示名，不会猜测或误删其他成员的 @提及。配置使用：
 
    ```toml
    mode = "websocket"
+   bot_name = "机器人在企业微信中的显示名"
    ```
 
 6. 重启服务：
@@ -38,6 +39,14 @@ API 长连接模式不需要公网 URL、CorpID、AgentID、Token、EncodingAESK
 4. cc-connect 会创建并绑定一个标题带 `[企业微信-Codex]` 的 Codex 会话。
 
 此后，这个企业微信群始终进入同一个 Codex 会话；不同群之间不会共用上下文。单聊则按企业微信用户分别绑定 Codex 会话。
+
+企业微信 API 不会提供真实群名。若要让 Codex App 会话名与群名对应，在该群发送：
+
+```text
+@机器人 /name 实际企微群名
+```
+
+会话会立即固定为 `[企业微信-Codex] 实际企微群名`；后续消息和服务重启都不会再用系统生成的群标识覆盖它。`/name <序号> 名称` 仍可用于重命名指定会话。
 
 请注意：/new 不会自动创建企业微信群，也不会改变当前群的绑定、历史或上下文。它只会回复“手动新建内部群、添加机器人并 @机器人 发送首条消息”的操作引导。
 

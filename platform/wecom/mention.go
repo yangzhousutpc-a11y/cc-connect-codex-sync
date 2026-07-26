@@ -6,53 +6,79 @@ import (
 	"unicode/utf8"
 )
 
-func stripWeComAtMentions(content string, botIDs ...string) string {
+// stripWeComAtMentions removes only exact configured bot mentions from the
+// leading mention run in a WeCom callback. WeCom does not include a mention
+// list, so an unconfigured display name must never be guessed: it may belong
+// to another member of the group.
+func stripWeComAtMentions(content string, botNames ...string) string {
 	content = strings.TrimSpace(content)
-	for _, botID := range botIDs {
-		botID = strings.TrimSpace(botID)
-		if botID == "" {
-			continue
-		}
-		for _, prefix := range []string{"@", "＠"} {
-			needle := prefix + botID
-			for {
-				lower := strings.ToLower(content)
-				index := strings.Index(lower, strings.ToLower(needle))
-				if index < 0 {
-					break
-				}
-				content = content[:index] + content[index+len(needle):]
-			}
-		}
-	}
-	content = strings.TrimSpace(content)
-	for strings.Contains(content, "  ") {
-		content = strings.ReplaceAll(content, "  ", " ")
-	}
-	return stripLeadingDisplayMentionCommand(content)
-}
-
-// stripLeadingDisplayMentionCommand handles the display-name form emitted by
-// WeCom callbacks. Display names are not bot IDs and may contain spaces, so the
-// first slash-command or bang-command at a token boundary terminates the
-// leading mention prefix.
-func stripLeadingDisplayMentionCommand(content string) string {
-	if content == "" || (!strings.HasPrefix(content, "@") && !strings.HasPrefix(content, "＠")) {
+	botNames = normalizedWeComBotNames(botNames)
+	if len(botNames) == 0 || content == "" {
 		return content
 	}
-	for index, r := range content {
-		if r != '/' && r != '!' {
+
+	var out strings.Builder
+	for content != "" && (strings.HasPrefix(content, "@") || strings.HasPrefix(content, "＠")) {
+		if end, ok := matchedWeComBotMention(content, botNames); ok {
+			content = strings.TrimLeftFunc(content[end:], unicode.IsSpace)
 			continue
 		}
-		if index == 0 {
-			return content
+
+		// Keep an unconfigured member mention verbatim, then inspect a following
+		// leading mention. This allows "@成员 @机器人 正文" while never deleting
+		// @成员 merely because it appears before the bot.
+		end := strings.IndexFunc(content, unicode.IsSpace)
+		if end < 0 {
+			break
 		}
-		previous, _ := utf8.DecodeLastRuneInString(content[:index])
-		if unicode.IsSpace(previous) {
-			return strings.TrimSpace(content[index:])
+		out.WriteString(content[:end])
+		out.WriteByte(' ')
+		content = strings.TrimLeftFunc(content[end:], unicode.IsSpace)
+	}
+	out.WriteString(content)
+	return strings.TrimSpace(out.String())
+}
+
+func normalizedWeComBotNames(names []string) []string {
+	seen := make(map[string]struct{}, len(names))
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimLeft(strings.TrimSpace(name), "@＠")
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, name)
+	}
+	return result
+}
+
+func matchedWeComBotMention(content string, botNames []string) (int, bool) {
+	if content == "" || (!strings.HasPrefix(content, "@") && !strings.HasPrefix(content, "＠")) {
+		return 0, false
+	}
+	prefixLen := len("@")
+	if strings.HasPrefix(content, "＠") {
+		prefixLen = len("＠")
+	}
+	for _, name := range botNames {
+		end := prefixLen + len(name)
+		if len(content) < end || !strings.EqualFold(content[prefixLen:end], name) {
+			continue
+		}
+		if len(content) == end {
+			return end, true
+		}
+		next, _ := utf8.DecodeRuneInString(content[end:])
+		if unicode.IsSpace(next) || next == '@' || next == '＠' {
+			return end, true
 		}
 	}
-	return content
+	return 0, false
 }
 
 func splitByBytes(content string, maxBytes int) []string {

@@ -59,4 +59,5 @@ account_id = "default"
 # mode = "websocket"
 # bot_id = "your-wecom-bot-id"
 # bot_secret = "your-wecom-bot-secret"
+# bot_name = "your-bot-display-name" # optional; removes only this exact @mention
 # allow_from = "*"

@@ -189,7 +189,7 @@ func TestSessionReplyPrefix_DesktopLiveSyncPrecedesCodexLabel(t *testing.T) {
 
 	e.pollDesktopLiveSyncRoutes(context.Background(), agent, e.sessions)
 
-	if got := p.getSent(); !reflect.DeepEqual(got, []string{"[A] ✣ Codex · 回复\nApp reply"}) {
+	if got := p.getSent(); !reflect.DeepEqual(got, []string{"[A] Codex · 回复\nApp reply"}) {
 		t.Fatalf("sent = %#v", got)
 	}
 }

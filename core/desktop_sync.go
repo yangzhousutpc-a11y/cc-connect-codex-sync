@@ -144,9 +144,9 @@ func (e *Engine) pollDesktopLiveSyncRoutes(ctx context.Context, poller ExternalC
 			}
 
 			if content != "" {
-				prefix := "✣ Codex · 回复\n"
+				prefix := "Codex · 回复\n"
 				if event.Role == "user" {
-					prefix = "✣ Codex App · 你\n"
+					prefix = "Codex App · 你\n"
 				}
 				if err := e.sendWithError(platform, replyCtx, prefix+content); err != nil {
 					slog.Warn("desktop live sync send failed", "role", event.Role, "stage", "text")

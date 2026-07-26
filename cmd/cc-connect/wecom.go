@@ -54,6 +54,7 @@ func runWeComSetup(command string, args []string, stdout, stderr io.Writer, read
 	platformIndex := fs.Int("platform-index", 0, "1-based WeCom platform index (0 = first)")
 	botID := fs.String("bot-id", "", "Enterprise WeChat intelligent-bot ID")
 	botSecret := fs.String("bot-secret", "", "Enterprise WeChat intelligent-bot secret")
+	botName := fs.String("bot-name", "", "optional Enterprise WeChat bot display name for exact @mention removal")
 	allowFrom := fs.String("allow-from", "", "optional comma-separated allowed user IDs")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -115,6 +116,7 @@ func runWeComSetup(command string, args []string, stdout, stderr io.Writer, read
 		PlatformIndex: *platformIndex,
 		BotID:         id,
 		BotSecret:     secret,
+		BotName:       strings.TrimSpace(*botName),
 		AllowFrom:     strings.TrimSpace(*allowFrom),
 	})
 	if err != nil {
@@ -186,9 +188,10 @@ Options:
   --platform-index <n>     1-based WeCom platform index (default: first)
   --bot-id <id>            Intelligent-bot ID
   --bot-secret <secret>    Intelligent-bot secret (prompted securely when omitted)
+  --bot-name <name>        Optional bot display name, used for exact @mention removal
   --allow-from <ids>       Optional comma-separated allowed user IDs
 
 Examples:
-  cc-connect wecom setup --project my-project --bot-id BOT_ID
+  cc-connect wecom setup --project my-project --bot-id BOT_ID --bot-name "My Codex"
   cc-connect wecom bind --project my-project --bot-id BOT_ID --bot-secret BOT_SECRET`)
 }

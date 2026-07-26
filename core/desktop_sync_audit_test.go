@@ -181,13 +181,13 @@ func TestDesktopLiveSyncRetriesUndeliveredEventsWithoutRepolling(t *testing.T) {
 	engine.pollDesktopLiveSync(context.Background(), agent)
 	engine.pollDesktopLiveSync(context.Background(), agent)
 
-	if got, want := platform.attempts, []string{"✣ Codex App · 你\nfirst", "✣ Codex App · 你\nfirst", "✣ Codex · 回复\nsecond"}; !equalDesktopSyncStrings(got, want) {
+	if got, want := platform.attempts, []string{"Codex App · 你\nfirst", "Codex App · 你\nfirst", "Codex · 回复\nsecond"}; !equalDesktopSyncStrings(got, want) {
 		t.Fatalf("send attempts = %#v, want %#v", got, want)
 	}
 	platform.mu.Lock()
 	delivered := append([]string(nil), platform.sent...)
 	platform.mu.Unlock()
-	if got, want := delivered, []string{"✣ Codex App · 你\nfirst", "✣ Codex · 回复\nsecond"}; !equalDesktopSyncStrings(got, want) {
+	if got, want := delivered, []string{"Codex App · 你\nfirst", "Codex · 回复\nsecond"}; !equalDesktopSyncStrings(got, want) {
 		t.Fatalf("delivered events = %#v, want %#v", got, want)
 	}
 	if got := agent.pollCalls; len(got) != 1 || got[0] != "thread-retry" {
@@ -198,7 +198,7 @@ func TestDesktopLiveSyncRetriesUndeliveredEventsWithoutRepolling(t *testing.T) {
 	platform.mu.Lock()
 	deliveredAfterAck := append([]string(nil), platform.sent...)
 	platform.mu.Unlock()
-	if got, want := deliveredAfterAck, []string{"✣ Codex App · 你\nfirst", "✣ Codex · 回复\nsecond"}; !equalDesktopSyncStrings(got, want) {
+	if got, want := deliveredAfterAck, []string{"Codex App · 你\nfirst", "Codex · 回复\nsecond"}; !equalDesktopSyncStrings(got, want) {
 		t.Fatalf("delivery after acknowledged retry = %#v, want no duplicates %#v", got, want)
 	}
 }
@@ -235,7 +235,7 @@ func TestDesktopLiveSyncKeepsRouteWhilePlatformTemporarilyUnavailable(t *testing
 	engine.pollDesktopLiveSync(context.Background(), agent)
 	platform.mu.Lock()
 	defer platform.mu.Unlock()
-	if got, want := platform.sent, []string{"✣ Codex App · 你\noffline message"}; !equalDesktopSyncStrings(got, want) {
+	if got, want := platform.sent, []string{"Codex App · 你\noffline message"}; !equalDesktopSyncStrings(got, want) {
 		t.Fatalf("delivered after reconnect = %#v, want %#v", got, want)
 	}
 }
@@ -303,7 +303,7 @@ func TestDesktopLiveSyncRestoresPersistedWorkspaceRoutesOnColdStart(t *testing.T
 	}
 	platform.mu.Lock()
 	defer platform.mu.Unlock()
-	if got, want := platform.sent, []string{"✣ Codex App · 你\ncold-start message"}; !equalDesktopSyncStrings(got, want) {
+	if got, want := platform.sent, []string{"Codex App · 你\ncold-start message"}; !equalDesktopSyncStrings(got, want) {
 		t.Fatalf("cold-start delivery = %#v, want %#v", got, want)
 	}
 }
@@ -377,7 +377,7 @@ func TestDesktopLiveSyncRelaysMultiWorkspaceNewTargetAppEventOnce(t *testing.T) 
 
 	platform.mu.Lock()
 	defer platform.mu.Unlock()
-	if got, want := platform.sent, []string{"✣ Codex App · 你\nB 群 App 消息"}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := platform.sent, []string{"Codex App · 你\nB 群 App 消息"}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("desktop relay = %#v, want %#v", got, want)
 	}
 	if got, want := platform.sentCtx, []any{"reconstructed:feishu:chat-b:user-1"}; len(got) != len(want) || got[0] != want[0] {

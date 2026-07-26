@@ -66,7 +66,7 @@ func TestDesktopLiveSyncSendsTextAndImagesInOrder(t *testing.T) {
 	engine.pollDesktopLiveSync(context.Background(), agent)
 
 	want := []string{
-		"text:✣ Codex App · 你\nbody",
+		"text:Codex App · 你\nbody",
 		"image:one.png", "image:two.png",
 	}
 	if got := desktopMediaSequence(platform); !reflect.DeepEqual(got, want) {
@@ -102,7 +102,7 @@ func TestDesktopLiveSyncRetriesOnlyUnacknowledgedMediaItems(t *testing.T) {
 	engine.pollDesktopLiveSync(context.Background(), agent)
 
 	want := []string{
-		"text:✣ Codex App · 你\nbody",
+		"text:Codex App · 你\nbody",
 		"image:one.png", "image:two.png",
 		"image:two.png", "image:three.png",
 	}
@@ -158,7 +158,7 @@ func TestDesktopLiveSyncSkipsMediaWhenAttachmentSendDisabled(t *testing.T) {
 	agent, platform, engine := newDesktopMediaEngine(t, event)
 	engine.SetAttachmentSendEnabled(false)
 	engine.pollDesktopLiveSync(context.Background(), agent)
-	if got, want := desktopMediaSequence(platform), []string{"text:✣ Codex App · 你\nbody"}; !reflect.DeepEqual(got, want) {
+	if got, want := desktopMediaSequence(platform), []string{"text:Codex App · 你\nbody"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sequence = %#v, want %#v", got, want)
 	}
 }
@@ -184,7 +184,7 @@ func TestDesktopLiveSyncSkipsUnsupportedMediaWithoutRepeatingText(t *testing.T) 
 	engine.pollDesktopLiveSync(context.Background(), agent)
 	platform.mu.Lock()
 	defer platform.mu.Unlock()
-	if got, want := platform.sent, []string{"✣ Codex App · 你\nbody"}; !reflect.DeepEqual(got, want) {
+	if got, want := platform.sent, []string{"Codex App · 你\nbody"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sent = %#v, want %#v", got, want)
 	}
 }

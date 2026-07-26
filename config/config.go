@@ -2275,6 +2275,7 @@ type WeComCredentialUpdateOptions struct {
 	PlatformIndex int
 	BotID         string
 	BotSecret     string
+	BotName       string
 	AllowFrom     string
 }
 
@@ -2422,6 +2423,7 @@ func SaveWeComPlatformCredentials(opts WeComCredentialUpdateOptions) (*WeComCred
 	projectName := strings.TrimSpace(opts.ProjectName)
 	botID := strings.TrimSpace(opts.BotID)
 	botSecret := strings.TrimSpace(opts.BotSecret)
+	botName := strings.TrimSpace(opts.BotName)
 	if projectName == "" {
 		return nil, fmt.Errorf("project name is required")
 	}
@@ -2500,6 +2502,10 @@ func SaveWeComPlatformCredentials(opts WeComCredentialUpdateOptions) (*WeComCred
 	span = reloadSpan()
 	lines = upsertTomlStringKey(lines, span.optionsStart+1, span.optionsEnd, "bot_secret", botSecret)
 	span = reloadSpan()
+	if botName != "" {
+		lines = upsertTomlStringKey(lines, span.optionsStart+1, span.optionsEnd, "bot_name", botName)
+		span = reloadSpan()
+	}
 	if strings.TrimSpace(opts.AllowFrom) != "" {
 		lines = upsertTomlStringKey(lines, span.optionsStart+1, span.optionsEnd, "allow_from", allowFrom)
 	}

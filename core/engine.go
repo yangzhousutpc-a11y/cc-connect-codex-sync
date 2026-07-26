@@ -3714,6 +3714,13 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	}
 
 	agentSessionName := msg.ChatName
+	if strings.EqualFold(p.Name(), "wecom") {
+		if customName := sessions.GetSessionName(session.GetAgentSessionID()); customName != "" {
+			agentSessionName = customName
+		} else if logicalName := strings.TrimSpace(session.GetName()); strings.HasPrefix(logicalName, "[企业微信-Codex]") {
+			agentSessionName = logicalName
+		}
+	}
 	if _, spawnsExternalConversation := p.(ConversationSpawner); !spawnsExternalConversation {
 		if forker, ok := p.(InPlaceConversationForker); ok && forker.SupportsInPlaceConversationFork() {
 			agentSessionName = session.GetName()
@@ -8657,7 +8664,7 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 		return
 	}
 
-	agent, sessions, _, err := e.commandContext(p, msg)
+	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
@@ -8701,14 +8708,50 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgNameUsage))
 		return
 	}
+	if strings.EqualFold(p.Name(), "wecom") {
+		if formatter, ok := agent.(ConversationSourceNameFormatter); ok {
+			if formatted := strings.TrimSpace(formatter.FormatConversationNameForPlatform("wecom", name)); formatted != "" {
+				name = formatted
+			}
+		}
+	}
 
 	sessions.SetSessionName(targetID, name)
+	if active := sessions.GetOrCreateActive(msg.SessionKey); active.GetAgentSessionID() == targetID {
+		active.SetName(name)
+		sessions.Save()
+		e.syncLiveAgentSessionName(interactiveKey, targetID, name)
+	}
 
 	shortID := targetID
 	if len(shortID) > 12 {
 		shortID = shortID[:12]
 	}
 	e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgNameSet), name, shortID))
+}
+
+// syncLiveAgentSessionName applies an explicit /name change immediately when
+// the target is the active conversation. The session-name map remains the
+// durable source of truth; this only keeps the open Codex App thread aligned
+// before the next incoming turn.
+func (e *Engine) syncLiveAgentSessionName(interactiveKey, targetID, name string) {
+	e.interactiveMu.Lock()
+	state := e.interactiveStates[interactiveKey]
+	if state != nil {
+		state.mu.Lock()
+	}
+	e.interactiveMu.Unlock()
+	if state == nil {
+		return
+	}
+	agentSession := state.agentSession
+	state.mu.Unlock()
+	if agentSession == nil || agentSession.CurrentSessionID() != targetID {
+		return
+	}
+	if err := syncAgentSessionName(agentSession, name); err != nil {
+		slog.Warn("failed to sync renamed agent session", "name", name, "error", err)
+	}
 }
 
 func (e *Engine) cmdCurrent(p Platform, msg *Message) {

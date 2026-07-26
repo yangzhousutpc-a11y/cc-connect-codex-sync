@@ -162,7 +162,7 @@ func TestDesktopLiveSyncRelaysMappedAppTurnToFeishu(t *testing.T) {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	want := []string{"✣ Codex App · 你\nApp 消息", "✣ Codex · 回复\nApp 回复"}
+	want := []string{"Codex App · 你\nApp 消息", "Codex · 回复\nApp 回复"}
 	if !reflect.DeepEqual(p.sent, want) {
 		t.Fatalf("sent = %#v, want %#v", p.sent, want)
 	}
@@ -7868,6 +7868,72 @@ func TestSyncAgentSessionName(t *testing.T) {
 	s.err = wantErr
 	if err := syncAgentSessionName(s, "新群名"); !errors.Is(err, wantErr) {
 		t.Fatalf("syncAgentSessionName error = %v, want %v", err, wantErr)
+	}
+}
+
+type wecomConversationNameAgent struct {
+	*controllableAgent
+}
+
+func (a *wecomConversationNameAgent) FormatConversationNameForPlatform(platformName, name string) string {
+	if platformName == "wecom" {
+		return "[企业微信-Codex] " + strings.TrimSpace(name)
+	}
+	return strings.TrimSpace(name)
+}
+
+func TestCmdNameWeComFormatsPersistsAndSynchronizesLiveSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "wecom"}
+	live := &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")}
+	agent := &wecomConversationNameAgent{controllableAgent: &controllableAgent{nextSession: live}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
+
+	const sessionKey = "wecom:g:group-1"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	session.SetAgentSessionID("thread-wecom", agent.Name())
+	e.interactiveStates[sessionKey] = &interactiveState{agentSession: live, platform: p, replyCtx: "ctx"}
+
+	e.cmdName(p, &Message{SessionKey: sessionKey, ReplyCtx: "ctx"}, []string{"实际企微群名"})
+
+	const want = "[企业微信-Codex] 实际企微群名"
+	if got := e.sessions.GetSessionName("thread-wecom"); got != want {
+		t.Fatalf("persisted session name = %q, want %q", got, want)
+	}
+	if got := session.GetName(); got != want {
+		t.Fatalf("logical session name = %q, want %q", got, want)
+	}
+	if got := live.name; got != want {
+		t.Fatalf("live Codex conversation name = %q, want %q", got, want)
+	}
+}
+
+func TestProcessInteractiveMessageWithWeComCustomNameOverridesSynthesizedChatName(t *testing.T) {
+	p := &stubPlatformEngine{n: "wecom"}
+	live := &namingAgentSession{controllableAgentSession: newControllableSession("thread-wecom")}
+	agent := &controllableAgent{nextSession: live}
+	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
+
+	const sessionKey = "wecom:g:group-1"
+	const want = "[企业微信-Codex] 实际企微群名"
+	session := e.sessions.NewSession(sessionKey, want)
+	session.SetAgentSessionID("thread-wecom", agent.Name())
+	e.sessions.SetSessionName("thread-wecom", want)
+	if !session.TryLock() {
+		t.Fatal("expected session lock")
+	}
+	e.interactiveStates[sessionKey] = &interactiveState{agentSession: live, platform: p, replyCtx: "ctx"}
+	live.events <- Event{Type: EventResult, Content: "完成", Done: true}
+
+	e.processInteractiveMessageWith(p, &Message{
+		SessionKey: sessionKey,
+		UserID:     "user-1",
+		Content:    "后续普通消息",
+		ChatName:   "企业微信群-000001",
+		ReplyCtx:   "ctx",
+	}, session, agent, e.sessions, sessionKey, "", sessionKey)
+
+	if got, wantNames := live.names, []string{want, want}; !reflect.DeepEqual(got, wantNames) {
+		t.Fatalf("synced names = %#v, want persistent custom name %#v", got, wantNames)
 	}
 }
 

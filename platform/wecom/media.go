@@ -204,7 +204,7 @@ func (p *Platform) populateInboundMediaWithinBudget(
 			})
 		}
 	}
-	message.Content = stripWeComAtMentions(strings.Join(texts, "\n"), p.botID, body.AibotID)
+	message.Content = stripWeComAtMentions(strings.Join(texts, "\n"), p.botName, p.botID, body.AibotID)
 	if message.Content == "" && len(message.Images) == 0 && len(message.Files) == 0 {
 		message.Content = mediaDownloadFailureNotice
 	}

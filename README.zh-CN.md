@@ -63,9 +63,10 @@ Platforms: Feishu, personal Weixin, WeCom
 ### 企业微信：手建群、一群一会话
 
 - 在企业微信管理后台创建智能机器人，开启 API 长连接模式并取得 BotID 与 Secret。
-- 本机运行 `cc-connect wecom setup`，重启服务。
+- 本机运行 `cc-connect wecom setup --bot-name "机器人显示名"`，重启服务；填写显示名后只会精确去除机器人的 @ 前缀，不会误删其他成员的 @提及。
 - 手动创建内部群并添加机器人；群内需要 @机器人 发送第一条消息。
 - 每个群稳定绑定一个 `[企业微信-Codex]` 会话。
+- 在群内发送 `@机器人 /name 实际企微群名`，可将该会话固定为 `[企业微信-Codex] 实际企微群名`。
 - `/new` 不会自动创建企业微信群，也不会改变当前会话，只返回建群操作引导。
 
 完整步骤见[企业微信指南](docs/wecom.md)。Secret 只保存在本机配置，不要提交 Git。
@@ -73,10 +74,10 @@ Platforms: Feishu, personal Weixin, WeCom
 ### 同步消息标识
 
 ```text
-✣ Codex App · 你
+Codex App · 你
 用户在 Codex App 输入的内容
 
-✣ Codex · 回复
+Codex · 回复
 Codex 返回的内容
 ```
 
