@@ -302,7 +302,7 @@ func TestAppServerSession_HandleRequestUserInputWritesCodexResponse(t *testing.T
 	}
 }
 
-func TestAppServerSession_SetSessionNameSyncsAndSkipsDuplicates(t *testing.T) {
+func TestAppServerSession_SetSessionNameSyncsEveryCall(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -348,15 +348,9 @@ func TestAppServerSession_SetSessionNameSyncsAndSkipsDuplicates(t *testing.T) {
 	if !reflect.DeepEqual(refreshed, []string{"thread-1"}) {
 		t.Fatalf("refreshes after first name = %#v, want immediate thread refresh", refreshed)
 	}
-	writesAfterFirstName := strings.Count(stdin.String(), "\n")
-	if err := s.SetSessionName("[Codex] Alpha"); err != nil {
-		t.Fatalf("duplicate SetSessionName: %v", err)
-	}
-	if got := strings.Count(stdin.String(), "\n"); got != writesAfterFirstName {
-		t.Fatalf("duplicate name wrote another request: got %d lines, want %d", got, writesAfterFirstName)
-	}
+	setName("[Codex] Alpha")
 	if !reflect.DeepEqual(refreshed, []string{"thread-1", "thread-1"}) {
-		t.Fatalf("refreshes after duplicate name = %#v, want a second UI refresh", refreshed)
+		t.Fatalf("refreshes after repeated name = %#v, want a second UI refresh", refreshed)
 	}
 	setName("[Codex] Beta")
 	if !reflect.DeepEqual(refreshed, []string{"thread-1", "thread-1", "thread-1"}) {
