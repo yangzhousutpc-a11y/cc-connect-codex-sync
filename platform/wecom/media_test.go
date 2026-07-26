@@ -7,7 +7,9 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +21,119 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/yangzhousutpc-a11y/cc-connect-codex-sync/core"
 )
+
+func TestInboundMediaFailureLogsAreRedacted(t *testing.T) {
+	const (
+		sensitiveHost     = "private-media.example.invalid"
+		sensitivePath     = "customer-secret-path"
+		sensitiveToken    = "signed-token-secret"
+		sensitiveKey      = "aes-key-secret"
+		sensitiveBody     = "encrypted-body-secret"
+		sensitiveFileName = "confidential-filename.pdf"
+		sensitiveID       = "internal-media-id-secret"
+	)
+	sensitiveURL := "https://" + sensitiveHost + "/" + sensitivePath +
+		"?token=" + sensitiveToken + "&media_id=" + sensitiveID
+	validKey := validAESKeyForTest()
+
+	tests := []struct {
+		name         string
+		mediaType    string
+		transport    http.RoundTripper
+		key          string
+		wantCategory string
+	}{
+		{
+			name:      "image transport error",
+			mediaType: "image",
+			transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				return nil, errors.New("dial failed for " + request.URL.String())
+			}),
+			key:          validKey,
+			wantCategory: "transport",
+		},
+		{
+			name:      "file HTTP status",
+			mediaType: "file",
+			transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusBadGateway,
+					Status:     "502 Bad Gateway",
+					Body:       io.NopCloser(strings.NewReader(sensitiveBody)),
+					Header: http.Header{
+						"Content-Disposition": []string{
+							`attachment; filename="` + sensitiveFileName + `"`,
+						},
+					},
+					Request: request,
+				}, nil
+			}),
+			key:          validKey,
+			wantCategory: "http_status",
+		},
+		{
+			name:      "invalid AES key",
+			mediaType: "file",
+			transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				return mediaResponseForLogTest(request, []byte(sensitiveBody), sensitiveFileName), nil
+			}),
+			key:          sensitiveKey,
+			wantCategory: "decrypt",
+		},
+		{
+			name:      "invalid padding",
+			mediaType: "file",
+			transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				return mediaResponseForLogTest(
+					request, bytes.Repeat([]byte{0}, aes.BlockSize), sensitiveFileName,
+				), nil
+			}),
+			key:          validKey,
+			wantCategory: "decrypt",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			p := &Platform{httpClient: &http.Client{Transport: test.transport}}
+			message := &core.Message{}
+			p.populateInboundMediaWithinBudget(
+				context.Background(),
+				&wsMsgCallbackBody{},
+				message,
+				[]inboundMediaPart{{
+					kind: test.mediaType,
+					ref:  wsMediaRef{URL: sensitiveURL, AESKey: test.key},
+				}},
+				wecomMediaMaxBytes,
+			)
+
+			output := logs.String()
+			if !strings.Contains(output, "category="+test.wantCategory) {
+				t.Fatalf("log = %q, want category %q", output, test.wantCategory)
+			}
+			for _, secret := range []string{
+				sensitiveHost,
+				sensitivePath,
+				sensitiveToken,
+				validKey,
+				sensitiveKey,
+				sensitiveBody,
+				sensitiveFileName,
+				sensitiveID,
+			} {
+				if strings.Contains(output, secret) {
+					t.Fatalf("log contains sensitive value %q: %s", secret, output)
+				}
+			}
+		})
+	}
+}
 
 func TestMediaDownloadDecryptsAES256CBCAndSanitizesName(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
@@ -582,4 +697,26 @@ func encryptMediaWithPaddingBlockForTest(
 
 func validAESKeyForTest() string {
 	return base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+func mediaResponseForLogTest(
+	request *http.Request,
+	body []byte,
+	filename string,
+) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header: http.Header{
+			"Content-Disposition": []string{`attachment; filename="` + filename + `"`},
+		},
+		Request: request,
+	}
 }

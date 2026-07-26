@@ -169,7 +169,7 @@ func (p *Platform) populateInboundMediaWithinBudget(
 			data, name, used, err := p.downloadAndDecryptWithinLimit(ctx, part.ref, 0, remaining)
 			remaining = remainingAfterMediaRead(remaining, used)
 			if err != nil {
-				slog.Warn("wecom: image download failed", "error", err)
+				logInboundMediaFailure("image", err)
 				continue
 			}
 			if name == "" {
@@ -191,7 +191,7 @@ func (p *Platform) populateInboundMediaWithinBudget(
 			data, name, used, err := p.downloadAndDecryptWithinLimit(ctx, part.ref, 0, remaining)
 			remaining = remainingAfterMediaRead(remaining, used)
 			if err != nil {
-				slog.Warn("wecom: file download failed", "error", err)
+				logInboundMediaFailure("file", err)
 				continue
 			}
 			if name == "" {
@@ -208,6 +208,50 @@ func (p *Platform) populateInboundMediaWithinBudget(
 	if message.Content == "" && len(message.Images) == 0 && len(message.Files) == 0 {
 		message.Content = mediaDownloadFailureNotice
 	}
+}
+
+func logInboundMediaFailure(mediaType string, err error) {
+	slog.Warn(
+		"wecom: inbound media unavailable",
+		"media_type", mediaType,
+		"category", inboundMediaFailureCategory(err),
+	)
+}
+
+func inboundMediaFailureCategory(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "download media: HTTP "):
+		return "http_status"
+	case strings.Contains(message, "media too large"),
+		strings.Contains(message, "media exceeds remaining message budget"):
+		return "size_limit"
+	case strings.Contains(message, "AES"),
+		strings.Contains(message, "encrypted media"),
+		strings.Contains(message, "PKCS#7"):
+		return "decrypt"
+	case strings.Contains(message, "read media:"):
+		return "read"
+	case strings.Contains(message, "parse media URL:"),
+		strings.Contains(message, "media URL must use https"),
+		strings.Contains(message, "create media request:"),
+		strings.Contains(message, "media redirect must use https"),
+		strings.Contains(message, "stopped after 10 media redirects"):
+		return "request"
+	}
+
+	var transportError *url.Error
+	if errors.As(err, &transportError) {
+		return "transport"
+	}
+	return "download"
 }
 
 func remainingAfterMediaRead(remaining, used int64) int64 {
