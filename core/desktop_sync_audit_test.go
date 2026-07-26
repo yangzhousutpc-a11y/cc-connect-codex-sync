@@ -991,6 +991,7 @@ func TestDesktopLiveSyncCompletionWaitsUntilNameQueueCanAcceptIt(t *testing.T) {
 		name:             "desktop-name-sync",
 	}
 	engine := NewEngine("test", agent, nil, "", LangChinese)
+	engine.desktopNameReassertNow = func() time.Time { return now }
 	session := engine.sessions.NewSession(sessionKey, customName)
 	session.SetAgentSessionID(sessionID, agent.Name())
 	engine.sessions.SetSessionName(sessionID, customName)
